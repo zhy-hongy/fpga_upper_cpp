@@ -1,0 +1,61 @@
+#include "control_frame.h"
+#include "crc16.h"
+#include <stdexcept>
+
+QByteArray pack_cmd_frame(int device_type, int cmd_code, int msg_id,
+                          uint8_t msg_type, uint8_t rw,
+                          const QByteArray& data) {
+    QByteArray frame;
+    auto put16 = [&](uint16_t v) {
+        frame.append(static_cast<char>((v >> 8) & 0xFF));
+        frame.append(static_cast<char>(v & 0xFF));
+    };
+    put16(CMD_HEADER);
+    put16(static_cast<uint16_t>(device_type));
+    put16(static_cast<uint16_t>(cmd_code));
+    put16(static_cast<uint16_t>(msg_id));
+    frame.append(static_cast<char>(msg_type));
+    frame.append(static_cast<char>(rw));
+    put16(static_cast<uint16_t>(data.size()));
+    frame.append(data);
+
+    // CRC covers everything after CMD_HEADER
+    uint16_t crc = crc16_modbus(
+        reinterpret_cast<const uint8_t*>(frame.constData()) + 2,
+        frame.size() - 2);
+
+    put16(crc);
+    put16(CMD_TAIL);
+    return frame;
+}
+
+ControlFrame unpack_cmd_frame(const QByteArray& frame) {
+    if (frame.size() < 16) {
+        throw std::runtime_error("Control frame too short: " + std::to_string(frame.size()) + " < 16");
+    }
+
+    auto read16 = [&](int offset) -> uint16_t {
+        return (static_cast<uint8_t>(frame[offset]) << 8) |
+               static_cast<uint8_t>(frame[offset + 1]);
+    };
+
+    uint16_t header = read16(0);
+    if (header != CMD_HEADER) {
+        throw std::runtime_error("Control frame header error");
+    }
+
+    uint16_t tail = read16(frame.size() - 2);
+    if (tail != CMD_TAIL) {
+        throw std::runtime_error("Control frame tail error");
+    }
+
+    ControlFrame cf;
+    cf.device_type = read16(2);
+    cf.cmd_code = read16(4);
+    cf.msg_id = read16(6);
+    cf.msg_type = static_cast<uint8_t>(frame[8]);
+    cf.rw = static_cast<uint8_t>(frame[9]);
+    int data_len = read16(10);
+    cf.data = frame.mid(12, data_len);
+    return cf;
+}
