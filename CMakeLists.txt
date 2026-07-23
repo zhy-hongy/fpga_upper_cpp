@@ -69,6 +69,20 @@ add_custom_command(TARGET fpga_upper POST_BUILD
 )
 
 # ── Platform specific ──
+# 如果希望在 Windows 下隐藏控制台黑框，可以解开这三行的注释：
+# if(WIN32)
+#     set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
+# endif()
+
+# ── Platform specific ──
 if(WIN32)
-    set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
+    # 使用生成器表达式条件判断：如果是 Debug 配置，指向 debug 目录，否则指向标准目录
+    set(QT_PLATFORMS_DIR $<IF:$<CONFIG:Debug>,${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/Qt6/plugins/platforms,${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/Qt6/plugins/platforms>)
+
+    add_custom_command(TARGET fpga_upper POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${QT_PLATFORMS_DIR}"
+            "$<TARGET_FILE_DIR:fpga_upper>/platforms"
+        COMMENT "Copying Qt platform plugins for $<CONFIG> mode..."
+    )
 endif()
