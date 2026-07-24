@@ -409,12 +409,21 @@ void MainWindow::init_ui() {
     m_btn_show_centerline->setObjectName("mode_btn");
     m_btn_show_centerline->setCheckable(true);
     m_btn_show_centerline->setToolTip("中心线");
-    // Try to load icon from assets
+    m_btn_show_centerline->setText("中心线");  // 添加文本，明确显示功能
+
+    // 尝试从 assets 加载图标
     QString assetsDir = QCoreApplication::applicationDirPath() + "/assets";
     QString clIcon = assetsDir + "/center_line.svg";
-    if (QFile::exists(clIcon))
+    if (QFile::exists(clIcon)) {
         m_btn_show_centerline->setIcon(QIcon(clIcon));
-    m_btn_show_centerline->setIconSize(QSize(40, 40));
+        m_btn_show_centerline->setIconSize(QSize(40, 40));
+    }
+    else {
+        // 若图标不存在，可调整文本样式或保持纯文本（无需额外操作）
+        // 可根据需要设置字体或样式，例如：
+        // m_btn_show_centerline->setStyleSheet("font-weight: bold;");
+    }
+
     layout_row->addWidget(m_btn_show_centerline);
     layout_row->addSpacing(12);
 
@@ -697,7 +706,7 @@ void MainWindow::build_work_mode_group(QVBoxLayout* parent) {
     m_btn_batch_start->setObjectName("batch_btn");
     row_batch_btn->addWidget(m_btn_batch_start);
 
-    m_btn_batch_stop = new QPushButton("停止批处理");
+    m_btn_batch_stop = new QPushButton("暂停批处理");
     m_btn_batch_stop->setObjectName("batch_btn");
     row_batch_btn->addWidget(m_btn_batch_stop);
 

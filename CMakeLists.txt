@@ -70,9 +70,9 @@ add_custom_command(TARGET fpga_upper POST_BUILD
 
 # ── Platform specific ──
 # 如果希望在 Windows 下隐藏控制台黑框，可以解开这三行的注释：
-# if(WIN32)
-#     set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
-# endif()
+if(WIN32)
+    set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
 
 # ── Platform specific ──
 if(WIN32)
