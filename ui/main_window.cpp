@@ -123,9 +123,31 @@ QComboBox {
     border-radius: 3px;
     min-height: 22px;
 }
+QComboBox:hover {
+    border-color: #00A896;
+}
 QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
     border: none;
-    width: 18px;
+    border-left: 1px solid #3A3A3A;
+    width: 22px;
+    background-color: #2E2E2E;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+}
+QComboBox::down-arrow {
+    image: url(:/assets/arrow_down.png);
+    width: 10px;
+    height: 6px;
+}
+QComboBox QAbstractItemView {
+    background-color: #2A2A2A;
+    border: 1px solid #3A3A3A;
+    color: #C0C0C0;
+    selection-background-color: #004D40;
+    selection-color: #00FFCC;
+    outline: none;
 }
 QCheckBox, QRadioButton {
     color: #A0A0A0;
@@ -198,7 +220,7 @@ QLineEdit {
 QLineEdit:focus {
     border-color: #00A896;
 }
-QSpinBox {
+QSpinBox, QDoubleSpinBox {
     background-color: #2A2A2A;
     border: 1px solid #3A3A3A;
     color: #00FFCC;
@@ -207,8 +229,49 @@ QSpinBox {
     font-size: 12px;
     min-width: 70px;
 }
-QSpinBox:focus {
+QSpinBox:focus, QDoubleSpinBox:focus {
     border-color: #00A896;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    border: none;
+    border-left: 1px solid #3A3A3A;
+    border-bottom: 1px solid #3A3A3A;
+    background-color: #2E2E2E;
+    width: 18px;
+    border-top-right-radius: 3px;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
+    background-color: #3A3A3A;
+}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
+    background-color: #004D40;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    border: none;
+    border-left: 1px solid #3A3A3A;
+    background-color: #2E2E2E;
+    width: 18px;
+    border-bottom-right-radius: 3px;
+}
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: #3A3A3A;
+}
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+    background-color: #004D40;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url(:/assets/arrow_up.png);
+    width: 10px;
+    height: 6px;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url(:/assets/arrow_down.png);
+    width: 10px;
+    height: 6px;
 }
 QSlider::groove:horizontal {
     height: 4px;
@@ -558,9 +621,9 @@ void MainWindow::build_image_tab(QVBoxLayout* parent) {
     build_cam_group(parent);
     build_exposure_delay_group(parent);
     build_measure_range_group(parent);
-    build_image_enhance_group(parent);
-    build_image_display_group(parent);
-    build_image_roi_group(parent);
+    //build_image_enhance_group(parent);
+    //build_image_display_group(parent);
+    //build_image_roi_group(parent);
 }
 
 void MainWindow::build_system_tab(QVBoxLayout* parent) {
@@ -568,7 +631,7 @@ void MainWindow::build_system_tab(QVBoxLayout* parent) {
     build_device_ip_group(parent);
     build_firmware_upgrade_group(parent);
     build_system_info_group(parent);
-    build_system_sync_group(parent);
+    //build_system_sync_group(parent);
     build_status_group(parent);
     build_protocol_analyzer_group(parent);
 }
@@ -808,106 +871,106 @@ void MainWindow::build_measure_range_group(QVBoxLayout* parent) {
     parent->addWidget(g);
 }
 
-void MainWindow::build_image_enhance_group(QVBoxLayout* parent) {
-    auto* g = new QGroupBox("图像增强");
-    auto* lay = new QGridLayout(g);
-    lay->setSpacing(6);
-    lay->setContentsMargins(8, 20, 8, 8);
-
-    lay->addWidget(new QCheckBox("自动曝光"), 0, 0);
-    lay->addWidget(new QCheckBox("自动增益"), 0, 1);
-    lay->addWidget(new QCheckBox("自动白平衡"), 1, 0);
-    lay->addWidget(new QCheckBox("自动对比度"), 1, 1);
-
-    lay->addWidget(new QLabel("亮度:"), 2, 0);
-    auto* spin_brightness = new QSpinBox();
-    spin_brightness->setRange(0, 255);
-    spin_brightness->setValue(120);
-    lay->addWidget(spin_brightness, 2, 1);
-
-    lay->addWidget(new QLabel("Gamma:"), 3, 0);
-    auto* spin_gamma = new QSpinBox();
-    spin_gamma->setRange(1, 400);
-    spin_gamma->setValue(100);
-    lay->addWidget(spin_gamma, 3, 1);
-
-    parent->addWidget(g);
-}
-
-void MainWindow::build_image_display_group(QVBoxLayout* parent) {
-    auto* g = new QGroupBox("图像显示");
-    auto* lay = new QVBoxLayout(g);
-    lay->setSpacing(6);
-    lay->setContentsMargins(8, 20, 8, 8);
-
-    auto* row_mode = new QHBoxLayout();
-    row_mode->addWidget(new QRadioButton("灰度"));
-    row_mode->addWidget(new QRadioButton("伪彩"));
-    row_mode->addWidget(new QRadioButton("轮廓"));
-    row_mode->addStretch();
-    lay->addLayout(row_mode);
-
-    auto* grid = new QGridLayout();
-    grid->addWidget(new QLabel("最小值:"), 0, 0);
-    auto* spin_min = new QSpinBox();
-    spin_min->setRange(0, 255);
-    spin_min->setValue(0);
-    grid->addWidget(spin_min, 0, 1);
-
-    grid->addWidget(new QLabel("最大值:"), 1, 0);
-    auto* spin_max = new QSpinBox();
-    spin_max->setRange(0, 255);
-    spin_max->setValue(255);
-    grid->addWidget(spin_max, 1, 1);
-
-    grid->addWidget(new QLabel("平滑:"), 2, 0);
-    auto* spin_smooth = new QSpinBox();
-    spin_smooth->setRange(0, 20);
-    spin_smooth->setValue(3);
-    grid->addWidget(spin_smooth, 2, 1);
-    lay->addLayout(grid);
-
-    auto* row_flags = new QHBoxLayout();
-    row_flags->addWidget(new QCheckBox("叠加坐标"));
-    row_flags->addWidget(new QCheckBox("中心线"));
-    row_flags->addWidget(new QCheckBox("反相"));
-    row_flags->addStretch();
-    lay->addLayout(row_flags);
-
-    parent->addWidget(g);
-}
-
-void MainWindow::build_image_roi_group(QVBoxLayout* parent) {
-    auto* g = new QGroupBox("图像区域");
-    auto* lay = new QFormLayout(g);
-    lay->setSpacing(4);
-    lay->setContentsMargins(8, 20, 8, 8);
-
-    auto* combo_zoom = new QComboBox();
-    combo_zoom->addItems({"适应窗口", "1:1", "2x", "4x"});
-    lay->addRow("缩放:", combo_zoom);
-
-    auto* combo_palette = new QComboBox();
-    combo_palette->addItems({"默认", "Iron", "Jet", "灰阶"});
-    lay->addRow("色表:", combo_palette);
-
-    lay->addRow("ROI X:", new QSpinBox());
-    lay->addRow("ROI Y:", new QSpinBox());
-
-    auto* row_size = new QHBoxLayout();
-    auto* spin_w = new QSpinBox();
-    spin_w->setRange(0, 4096);
-    spin_w->setValue(1280);
-    auto* spin_h = new QSpinBox();
-    spin_h->setRange(0, 4096);
-    spin_h->setValue(1024);
-    row_size->addWidget(spin_w);
-    row_size->addWidget(new QLabel("×"));
-    row_size->addWidget(spin_h);
-    lay->addRow("ROI 尺寸:", row_size);
-
-    parent->addWidget(g);
-}
+//void MainWindow::build_image_enhance_group(QVBoxLayout* parent) {
+//    auto* g = new QGroupBox("图像增强");
+//    auto* lay = new QGridLayout(g);
+//    lay->setSpacing(6);
+//    lay->setContentsMargins(8, 20, 8, 8);
+//
+//    lay->addWidget(new QCheckBox("自动曝光"), 0, 0);
+//    lay->addWidget(new QCheckBox("自动增益"), 0, 1);
+//    lay->addWidget(new QCheckBox("自动白平衡"), 1, 0);
+//    lay->addWidget(new QCheckBox("自动对比度"), 1, 1);
+//
+//    lay->addWidget(new QLabel("亮度:"), 2, 0);
+//    auto* spin_brightness = new QSpinBox();
+//    spin_brightness->setRange(0, 255);
+//    spin_brightness->setValue(120);
+//    lay->addWidget(spin_brightness, 2, 1);
+//
+//    lay->addWidget(new QLabel("Gamma:"), 3, 0);
+//    auto* spin_gamma = new QSpinBox();
+//    spin_gamma->setRange(1, 400);
+//    spin_gamma->setValue(100);
+//    lay->addWidget(spin_gamma, 3, 1);
+//
+//    parent->addWidget(g);
+//}
+//
+//void MainWindow::build_image_display_group(QVBoxLayout* parent) {
+//    auto* g = new QGroupBox("图像显示");
+//    auto* lay = new QVBoxLayout(g);
+//    lay->setSpacing(6);
+//    lay->setContentsMargins(8, 20, 8, 8);
+//
+//    auto* row_mode = new QHBoxLayout();
+//    row_mode->addWidget(new QRadioButton("灰度"));
+//    row_mode->addWidget(new QRadioButton("伪彩"));
+//    row_mode->addWidget(new QRadioButton("轮廓"));
+//    row_mode->addStretch();
+//    lay->addLayout(row_mode);
+//
+//    auto* grid = new QGridLayout();
+//    grid->addWidget(new QLabel("最小值:"), 0, 0);
+//    auto* spin_min = new QSpinBox();
+//    spin_min->setRange(0, 255);
+//    spin_min->setValue(0);
+//    grid->addWidget(spin_min, 0, 1);
+//
+//    grid->addWidget(new QLabel("最大值:"), 1, 0);
+//    auto* spin_max = new QSpinBox();
+//    spin_max->setRange(0, 255);
+//    spin_max->setValue(255);
+//    grid->addWidget(spin_max, 1, 1);
+//
+//    grid->addWidget(new QLabel("平滑:"), 2, 0);
+//    auto* spin_smooth = new QSpinBox();
+//    spin_smooth->setRange(0, 20);
+//    spin_smooth->setValue(3);
+//    grid->addWidget(spin_smooth, 2, 1);
+//    lay->addLayout(grid);
+//
+//    auto* row_flags = new QHBoxLayout();
+//    row_flags->addWidget(new QCheckBox("叠加坐标"));
+//    row_flags->addWidget(new QCheckBox("中心线"));
+//    row_flags->addWidget(new QCheckBox("反相"));
+//    row_flags->addStretch();
+//    lay->addLayout(row_flags);
+//
+//    parent->addWidget(g);
+//}
+//
+//void MainWindow::build_image_roi_group(QVBoxLayout* parent) {
+//    auto* g = new QGroupBox("图像区域");
+//    auto* lay = new QFormLayout(g);
+//    lay->setSpacing(4);
+//    lay->setContentsMargins(8, 20, 8, 8);
+//
+//    auto* combo_zoom = new QComboBox();
+//    combo_zoom->addItems({"适应窗口", "1:1", "2x", "4x"});
+//    lay->addRow("缩放:", combo_zoom);
+//
+//    auto* combo_palette = new QComboBox();
+//    combo_palette->addItems({"默认", "Iron", "Jet", "灰阶"});
+//    lay->addRow("色表:", combo_palette);
+//
+//    lay->addRow("ROI X:", new QSpinBox());
+//    lay->addRow("ROI Y:", new QSpinBox());
+//
+//    auto* row_size = new QHBoxLayout();
+//    auto* spin_w = new QSpinBox();
+//    spin_w->setRange(0, 4096);
+//    spin_w->setValue(1280);
+//    auto* spin_h = new QSpinBox();
+//    spin_h->setRange(0, 4096);
+//    spin_h->setValue(1024);
+//    row_size->addWidget(spin_w);
+//    row_size->addWidget(new QLabel("×"));
+//    row_size->addWidget(spin_h);
+//    lay->addRow("ROI 尺寸:", row_size);
+//
+//    parent->addWidget(g);
+//}
 
 // ══════════════════════════════════════════════════
 // System tab groups
@@ -1004,7 +1067,7 @@ void MainWindow::build_firmware_upgrade_group(QVBoxLayout* parent) {
     m_progress_firmware->setValue(0);
     lay->addWidget(m_progress_firmware);
 
-    m_lbl_upgrade_status = new QLabel("");
+    m_lbl_upgrade_status = new QLabel("升级状态显示");
     m_lbl_upgrade_status->setWordWrap(true);
     lay->addWidget(m_lbl_upgrade_status);
 
@@ -1034,28 +1097,28 @@ void MainWindow::build_system_info_group(QVBoxLayout* parent) {
     parent->addWidget(g);
 }
 
-void MainWindow::build_system_sync_group(QVBoxLayout* parent) {
-    auto* g = new QGroupBox("系统配置");
-    auto* lay = new QGridLayout(g);
-    lay->setSpacing(6);
-    lay->setContentsMargins(8, 20, 8, 8);
-
-    lay->addWidget(new QCheckBox("启用 NTP"), 0, 0);
-    lay->addWidget(new QCheckBox("自动重连"), 0, 1);
-    lay->addWidget(new QCheckBox("日志落盘"), 1, 0);
-    lay->addWidget(new QCheckBox("开机自检"), 1, 1);
-
-    lay->addWidget(new QLabel("缓存帧数:"), 2, 0);
-    auto* spin_cache = new QSpinBox();
-    spin_cache->setRange(1, 200);
-    spin_cache->setValue(16);
-    lay->addWidget(spin_cache, 2, 1);
-
-    lay->addWidget(new QLabel("保存路径:"), 3, 0);
-    lay->addWidget(new QLineEdit("captured_images/"), 3, 1);
-
-    parent->addWidget(g);
-}
+//void MainWindow::build_system_sync_group(QVBoxLayout* parent) {
+//    auto* g = new QGroupBox("系统配置");
+//    auto* lay = new QGridLayout(g);
+//    lay->setSpacing(6);
+//    lay->setContentsMargins(8, 20, 8, 8);
+//
+//    lay->addWidget(new QCheckBox("启用 NTP"), 0, 0);
+//    lay->addWidget(new QCheckBox("自动重连"), 0, 1);
+//    lay->addWidget(new QCheckBox("日志落盘"), 1, 0);
+//    lay->addWidget(new QCheckBox("开机自检"), 1, 1);
+//
+//    lay->addWidget(new QLabel("缓存帧数:"), 2, 0);
+//    auto* spin_cache = new QSpinBox();
+//    spin_cache->setRange(1, 200);
+//    spin_cache->setValue(16);
+//    lay->addWidget(spin_cache, 2, 1);
+//
+//    lay->addWidget(new QLabel("保存路径:"), 3, 0);
+//    lay->addWidget(new QLineEdit("captured_images/"), 3, 1);
+//
+//    parent->addWidget(g);
+//}
 
 void MainWindow::build_status_group(QVBoxLayout* parent) {
     auto* g = new QGroupBox("系统状态");
