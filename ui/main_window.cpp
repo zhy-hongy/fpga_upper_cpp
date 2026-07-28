@@ -137,27 +137,54 @@ QComboBox::drop-down {
     border-bottom-right-radius: 3px;
 }
 QComboBox::down-arrow {
-    image: url(:/assets/arrow_down.png);
+    image: url(:/assets/arrow_down.svg);
     width: 10px;
     height: 6px;
 }
 QComboBox QAbstractItemView {
     background-color: #2A2A2A;
     border: 1px solid #3A3A3A;
-    color: #C0C0C0;
-    selection-background-color: #004D40;
-    selection-color: #00FFCC;
     outline: none;
+}
+QComboBox QAbstractItemView::item {
+    color: #C0C0C0;
+    padding: 4px 8px;
+    min-height: 20px;
+}
+QComboBox QAbstractItemView::item:hover,
+QComboBox QAbstractItemView::item:selected {
+    background-color: #004D40;
+    color: #00FFCC;
 }
 QCheckBox, QRadioButton {
     color: #A0A0A0;
     spacing: 6px;
 }
-QCheckBox::indicator, QRadioButton::indicator {
-    width: 12px;
-    height: 12px;
+QRadioButton::indicator {
+    border: 1px solid #4A4A4A;
+    background-color: #1E1E1E;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
 }
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+QRadioButton::indicator:hover {
+    border-color: #00A896;
+}
+QRadioButton::indicator:checked {
+    background-color: #00A896;
+    border: 2px solid #00FFCC;
+}
+QCheckBox::indicator {
+    border: 1px solid #4A4A4A;
+    background-color: #1E1E1E;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+}
+QCheckBox::indicator:hover {
+    border-color: #00A896;
+}
+QCheckBox::indicator:checked {
     background-color: #00A896;
     border: 1px solid #00FFCC;
 }
@@ -264,12 +291,12 @@ QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
     background-color: #004D40;
 }
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    image: url(:/assets/arrow_up.png);
+    image: url(:/assets/arrow_up.svg);
     width: 10px;
     height: 6px;
 }
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    image: url(:/assets/arrow_down.png);
+    image: url(:/assets/arrow_down.svg);
     width: 10px;
     height: 6px;
 }
@@ -567,7 +594,7 @@ void MainWindow::init_ui() {
 
     // ── Right panel ──
     auto* right = new QWidget();
-    right->setFixedWidth(300);
+    right->setFixedWidth(350);
     auto* right_layout = new QVBoxLayout(right);
     right_layout->setSpacing(6);
     right_layout->setContentsMargins(0, 0, 0, 0);
@@ -595,7 +622,7 @@ QWidget* MainWindow::create_tab_page(void (MainWindow::*builder)(QVBoxLayout*)) 
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
 
-    auto* container = new QWidget();
+    auto* container = new QWidget(); 
     auto* layout = new QVBoxLayout(container);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(6);

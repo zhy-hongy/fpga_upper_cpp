@@ -8,7 +8,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # ── Dependencies ──
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 # ── Sources ──
@@ -58,6 +58,7 @@ target_link_libraries(fpga_upper PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
+    Qt6::Svg
     ${OpenCV_LIBS}
 )
 
@@ -68,21 +69,31 @@ add_custom_command(TARGET fpga_upper POST_BUILD
         $<TARGET_FILE_DIR:fpga_upper>/assets
 )
 
-# ── Platform specific ──
-# 如果希望在 Windows 下隐藏控制台黑框，可以解开这三行的注释：
+# ── Windows-specific: hide console + deploy Qt plugins ──
 if(WIN32)
+    # Hide the console window (remove if you want console output for debugging)
     set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
-endif()
 
-# ── Platform specific ──
-if(WIN32)
-    # 使用生成器表达式条件判断：如果是 Debug 配置，指向 debug 目录，否则指向标准目录
-    set(QT_PLATFORMS_DIR $<IF:$<CONFIG:Debug>,${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/Qt6/plugins/platforms,${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/Qt6/plugins/platforms>)
+    # Helper: generator expression for vcpkg plugin directory
+    set(_QT_PLUGIN_DIR ${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET})
+    set(_QT_PLUGIN_DEBUG_DIR ${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug)
 
+    function(qt_deploy_plugin_subdir SUBDIR)
+        set(DBG_DIR "${_QT_PLUGIN_DEBUG_DIR}/Qt6/plugins/${SUBDIR}")
+        set(REL_DIR "${_QT_PLUGIN_DIR}/Qt6/plugins/${SUBDIR}")
+        add_custom_command(TARGET fpga_upper POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<IF:$<CONFIG:Debug>,${DBG_DIR},${REL_DIR}>"
+                "$<TARGET_FILE_DIR:fpga_upper>/${SUBDIR}"
+            COMMENT "Deploying Qt ${SUBDIR} plugins for $<CONFIG>..."
+        )
+    endfunction()
+
+    qt_deploy_plugin_subdir(platforms)
+    qt_deploy_plugin_subdir(imageformats)
+
+    # Warn if Qt6Svg DLL is missing from the output (link dependency)
     add_custom_command(TARGET fpga_upper POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${QT_PLATFORMS_DIR}"
-            "$<TARGET_FILE_DIR:fpga_upper>/platforms"
-        COMMENT "Copying Qt platform plugins for $<CONFIG> mode..."
+        COMMAND ${CMAKE_COMMAND} -E echo "--- Qt plugins deployed ---"
     )
 endif()
