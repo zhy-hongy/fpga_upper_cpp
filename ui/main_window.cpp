@@ -395,8 +395,21 @@ MainWindow::MainWindow(const Config& config, QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
-    m_display_timer->stop();
-    m_protocol->stop_all();
+    // Stop all timers first
+    if (m_display_timer) {
+        m_display_timer->stop();
+        disconnect(m_display_timer, nullptr, this, nullptr);
+    }
+
+    // Disconnect all signals from protocol handler to prevent callbacks during destruction
+    if (m_protocol) {
+        disconnect(m_protocol, nullptr, this, nullptr);
+        // Stop all networking activities
+        m_protocol->stop_all();
+    }
+
+    // Disconnect all remaining connections to avoid signal emissions during destruction
+    disconnect(this, nullptr, nullptr, nullptr);
 }
 
 // ══════════════════════════════════════════════════
@@ -1196,105 +1209,123 @@ void MainWindow::build_protocol_analyzer_group(QVBoxLayout* parent) {
 
 void MainWindow::connect_signals() {
     // Protocol signals
-    connect(m_protocol, &ProtocolHandler::connected, this, &MainWindow::on_connected);
-    connect(m_protocol, &ProtocolHandler::disconnected, this, &MainWindow::on_disconnected);
-    connect(m_protocol, &ProtocolHandler::control_response, this, &MainWindow::on_control_response);
-    connect(m_protocol, &ProtocolHandler::data_frame_info, this, &MainWindow::on_frame_info);
-    connect(m_protocol, &ProtocolHandler::data_resolution, this, &MainWindow::on_resolution_changed);
-    connect(m_protocol, &ProtocolHandler::status_message, this, &MainWindow::on_status_message);
-    connect(m_protocol, &ProtocolHandler::error_occurred, this, &MainWindow::on_error_occurred);
+    if (m_protocol) {
+        connect(m_protocol, &ProtocolHandler::connected, this, &MainWindow::on_connected);
+        connect(m_protocol, &ProtocolHandler::disconnected, this, &MainWindow::on_disconnected);
+        connect(m_protocol, &ProtocolHandler::control_response, this, &MainWindow::on_control_response);
+        connect(m_protocol, &ProtocolHandler::data_frame_info, this, &MainWindow::on_frame_info);
+        connect(m_protocol, &ProtocolHandler::data_resolution, this, &MainWindow::on_resolution_changed);
+        connect(m_protocol, &ProtocolHandler::status_message, this, &MainWindow::on_status_message);
+        connect(m_protocol, &ProtocolHandler::error_occurred, this, &MainWindow::on_error_occurred);
+    }
 
     // Layout switching
-    connect(m_layout_group, &QButtonGroup::idToggled, this, &MainWindow::on_layout_changed);
+    if (m_layout_group) {
+        connect(m_layout_group, &QButtonGroup::idToggled, this, &MainWindow::on_layout_changed);
+    }
 
     // Mode buttons
-    connect(m_btn_show_image, &QPushButton::toggled, this, &MainWindow::on_image_toggled);
-    connect(m_btn_show_contour, &QPushButton::toggled, this, &MainWindow::on_contour_toggled);
-    connect(m_btn_show_3d, &QPushButton::toggled, this, &MainWindow::on_3d_toggled);
-    connect(m_btn_show_centerline, &QPushButton::toggled, this, &MainWindow::on_centerline_toggled);
-    connect(m_btn_save, &QPushButton::clicked, this, &MainWindow::on_save_image);
+    if (m_btn_show_image) connect(m_btn_show_image, &QPushButton::toggled, this, &MainWindow::on_image_toggled);
+    if (m_btn_show_contour) connect(m_btn_show_contour, &QPushButton::toggled, this, &MainWindow::on_contour_toggled);
+    if (m_btn_show_3d) connect(m_btn_show_3d, &QPushButton::toggled, this, &MainWindow::on_3d_toggled);
+    if (m_btn_show_centerline) connect(m_btn_show_centerline, &QPushButton::toggled, this, &MainWindow::on_centerline_toggled);
+    if (m_btn_save) connect(m_btn_save, &QPushButton::clicked, this, &MainWindow::on_save_image);
 
     // Measure buttons
-    connect(m_btn_measure_v, &QPushButton::toggled, this, &MainWindow::on_measure_toggled_v);
-    connect(m_btn_measure_h, &QPushButton::toggled, this, &MainWindow::on_measure_toggled_h);
+    if (m_btn_measure_v) connect(m_btn_measure_v, &QPushButton::toggled, this, &MainWindow::on_measure_toggled_v);
+    if (m_btn_measure_h) connect(m_btn_measure_h, &QPushButton::toggled, this, &MainWindow::on_measure_toggled_h);
 
     // Zoom
-    connect(m_btn_zoom_row_in, &QPushButton::clicked, this, &MainWindow::on_zoom_row_in);
-    connect(m_btn_zoom_row_out, &QPushButton::clicked, this, &MainWindow::on_zoom_row_out);
-    connect(m_btn_zoom_fit, &QPushButton::clicked, this, &MainWindow::on_zoom_fit);
-    connect(m_btn_zoom_col_in, &QPushButton::clicked, this, &MainWindow::on_zoom_col_in);
-    connect(m_btn_zoom_col_out, &QPushButton::clicked, this, &MainWindow::on_zoom_col_out);
+    if (m_btn_zoom_row_in) connect(m_btn_zoom_row_in, &QPushButton::clicked, this, &MainWindow::on_zoom_row_in);
+    if (m_btn_zoom_row_out) connect(m_btn_zoom_row_out, &QPushButton::clicked, this, &MainWindow::on_zoom_row_out);
+    if (m_btn_zoom_fit) connect(m_btn_zoom_fit, &QPushButton::clicked, this, &MainWindow::on_zoom_fit);
+    if (m_btn_zoom_col_in) connect(m_btn_zoom_col_in, &QPushButton::clicked, this, &MainWindow::on_zoom_col_in);
+    if (m_btn_zoom_col_out) connect(m_btn_zoom_col_out, &QPushButton::clicked, this, &MainWindow::on_zoom_col_out);
 
     // Camera selector
-    connect(m_camera_group, &QButtonGroup::idToggled, this, [this](int id, bool checked) {
-        if (!checked) return;
-        m_selected_camera = id;
-        m_exp_delay_group->setVisible(m_selected_camera == 0);
-    });
+    if (m_camera_group) {
+        connect(m_camera_group, &QButtonGroup::idToggled, this, [this](int id, bool checked) {
+            if (!checked) return;
+            m_selected_camera = id;
+            if (m_exp_delay_group) m_exp_delay_group->setVisible(m_selected_camera == 0);
+        });
+    }
 
     // Tab change
-    connect(m_tabs_right, &QTabWidget::currentChanged, this, &MainWindow::on_tab_changed);
+    if (m_tabs_right) connect(m_tabs_right, &QTabWidget::currentChanged, this, &MainWindow::on_tab_changed);
 
     // Trigger mode
-    connect(m_combo_trigger_mode, &QComboBox::currentIndexChanged, this, &MainWindow::on_trigger_mode_changed);
+    if (m_combo_trigger_mode) connect(m_combo_trigger_mode, &QComboBox::currentIndexChanged, this, &MainWindow::on_trigger_mode_changed);
 
     // Sample rate
-    connect(m_combo_sample_rate, &QComboBox::currentTextChanged, this, [this](const QString& v) {
-        m_status_widget->set_sample_rate(v + " Hz");
-        on_sample_rate_changed(v);
-    });
+    if (m_combo_sample_rate) {
+        connect(m_combo_sample_rate, &QComboBox::currentTextChanged, this, [this](const QString& v) {
+            if (m_status_widget) m_status_widget->set_sample_rate(v + " Hz");
+            on_sample_rate_changed(v);
+        });
+    }
 
     // Encoder
-    connect(m_combo_encoder_type, &QComboBox::currentIndexChanged, this, &MainWindow::on_encoder_type_changed);
-    connect(m_combo_encoder_mode, &QComboBox::currentIndexChanged, this, &MainWindow::on_encoder_mode_changed);
-    connect(m_spin_encoder_subdivision, &QSpinBox::valueChanged, this, &MainWindow::on_encoder_interval_changed);
+    if (m_combo_encoder_type) connect(m_combo_encoder_type, &QComboBox::currentIndexChanged, this, &MainWindow::on_encoder_type_changed);
+    if (m_combo_encoder_mode) connect(m_combo_encoder_mode, &QComboBox::currentIndexChanged, this, &MainWindow::on_encoder_mode_changed);
+    if (m_spin_encoder_subdivision) connect(m_spin_encoder_subdivision, &QSpinBox::valueChanged, this, &MainWindow::on_encoder_interval_changed);
 
     // External trigger
-    connect(m_chk_external_trigger, &QCheckBox::toggled, this, &MainWindow::on_external_trigger_toggled);
+    if (m_chk_external_trigger) connect(m_chk_external_trigger, &QCheckBox::toggled, this, &MainWindow::on_external_trigger_toggled);
 
     // Camera control
-    connect(m_exp_slider, &QSlider::valueChanged, m_exp_spin, &QSpinBox::setValue);
-    connect(m_exp_spin, &QSpinBox::valueChanged, m_exp_slider, &QSlider::setValue);
-    connect(m_gain_slider, &QSlider::valueChanged, m_gain_spin, &QSpinBox::setValue);
-    connect(m_gain_spin, &QSpinBox::valueChanged, m_gain_slider, &QSlider::setValue);
+    if (m_exp_slider && m_exp_spin) {
+        connect(m_exp_slider, &QSlider::valueChanged, m_exp_spin, &QSpinBox::setValue);
+        connect(m_exp_spin, &QSpinBox::valueChanged, m_exp_slider, &QSlider::setValue);
+        connect(m_exp_slider, &QSlider::sliderReleased, this, &MainWindow::on_exp_changed);
+        connect(m_exp_spin, &QSpinBox::editingFinished, this, &MainWindow::on_exp_changed);
+    }
+    if (m_gain_slider && m_gain_spin) {
+        connect(m_gain_slider, &QSlider::valueChanged, m_gain_spin, &QSpinBox::setValue);
+        connect(m_gain_spin, &QSpinBox::valueChanged, m_gain_slider, &QSlider::setValue);
+        connect(m_gain_slider, &QSlider::sliderReleased, this, &MainWindow::on_gain_changed);
+        connect(m_gain_spin, &QSpinBox::editingFinished, this, &MainWindow::on_gain_changed);
+    }
 
-    connect(m_exp_slider, &QSlider::sliderReleased, this, &MainWindow::on_exp_changed);
-    connect(m_exp_spin, &QSpinBox::editingFinished, this, &MainWindow::on_exp_changed);
-    connect(m_gain_slider, &QSlider::sliderReleased, this, &MainWindow::on_gain_changed);
-    connect(m_gain_spin, &QSpinBox::editingFinished, this, &MainWindow::on_gain_changed);
-
-    connect(m_btn_apply, &QPushButton::clicked, this, &MainWindow::on_apply_params);
-    connect(m_btn_read, &QPushButton::clicked, this, &MainWindow::on_read_params);
+    if (m_btn_apply) connect(m_btn_apply, &QPushButton::clicked, this, &MainWindow::on_apply_params);
+    if (m_btn_read) connect(m_btn_read, &QPushButton::clicked, this, &MainWindow::on_read_params);
 
     // Exposure delay
-    connect(m_btn_exp_delay_send, &QPushButton::clicked, this, &MainWindow::on_send_exp_delay);
+    if (m_btn_exp_delay_send) connect(m_btn_exp_delay_send, &QPushButton::clicked, this, &MainWindow::on_send_exp_delay);
 
     // Network
-    connect(m_btn_connect, &QPushButton::clicked, this, &MainWindow::on_net_connect);
-    connect(m_btn_disconnect, &QPushButton::clicked, this, &MainWindow::on_net_disconnect);
-    connect(m_btn_refresh_fpga, &QPushButton::clicked, this, [this]() {
-        refresh_local_ips(m_combo_host);
-    });
+    if (m_btn_connect) connect(m_btn_connect, &QPushButton::clicked, this, &MainWindow::on_net_connect);
+    if (m_btn_disconnect) connect(m_btn_disconnect, &QPushButton::clicked, this, &MainWindow::on_net_disconnect);
+    if (m_btn_refresh_fpga) {
+        connect(m_btn_refresh_fpga, &QPushButton::clicked, this, [this]() {
+            refresh_local_ips(m_combo_host);
+        });
+    }
 
     // Batch
-    connect(m_spin_batch_count, &QSpinBox::valueChanged, this, &MainWindow::on_batch_count_changed);
-    connect(m_btn_batch_start, &QPushButton::clicked, this, &MainWindow::on_batch_start);
-    connect(m_btn_batch_stop, &QPushButton::clicked, this, &MainWindow::on_batch_stop);
-    connect(m_btn_batch_reset, &QPushButton::clicked, this, &MainWindow::on_batch_reset);
+    if (m_spin_batch_count) connect(m_spin_batch_count, &QSpinBox::valueChanged, this, &MainWindow::on_batch_count_changed);
+    if (m_btn_batch_start) connect(m_btn_batch_start, &QPushButton::clicked, this, &MainWindow::on_batch_start);
+    if (m_btn_batch_stop) connect(m_btn_batch_stop, &QPushButton::clicked, this, &MainWindow::on_batch_stop);
+    if (m_btn_batch_reset) connect(m_btn_batch_reset, &QPushButton::clicked, this, &MainWindow::on_batch_reset);
 
     // Firmware
-    connect(m_btn_browse_firmware, &QPushButton::clicked, this, &MainWindow::on_browse_firmware);
-    connect(m_btn_upgrade_start, &QPushButton::clicked, this, &MainWindow::on_upgrade_start);
+    if (m_btn_browse_firmware) connect(m_btn_browse_firmware, &QPushButton::clicked, this, &MainWindow::on_browse_firmware);
+    if (m_btn_upgrade_start) connect(m_btn_upgrade_start, &QPushButton::clicked, this, &MainWindow::on_upgrade_start);
 
     // Protocol analyzer
-    connect(m_btn_protocol_analyzer, &QPushButton::clicked, this, &MainWindow::on_open_protocol_analyzer);
+    if (m_btn_protocol_analyzer) connect(m_btn_protocol_analyzer, &QPushButton::clicked, this, &MainWindow::on_open_protocol_analyzer);
 
     // Batch complete from views
-    for (auto* view : m_image_views)
-        connect(view, &ImageView::batch_complete, this, &MainWindow::on_batch_complete);
+    for (auto* view : m_image_views) {
+        if (view) {
+            connect(view, &ImageView::batch_complete, this, &MainWindow::on_batch_complete);
+        }
+    }
 
     // Initial status bar
-    m_status_widget->set_sample_rate(m_combo_sample_rate->currentText() + " Hz");
+    if (m_status_widget && m_combo_sample_rate) {
+        m_status_widget->set_sample_rate(m_combo_sample_rate->currentText() + " Hz");
+    }
 }
 
 // ══════════════════════════════════════════════════
@@ -1535,18 +1566,25 @@ void MainWindow::on_net_disconnect() {
 }
 
 void MainWindow::on_connected() {
+    if (!m_status_widget) return;
     m_status_widget->set_ip(QString("%1:%2").arg(m_edit_fpga->text()).arg(m_spin_fpga_port->value()));
     log("FPGA 已连接");
 
     // Read FW version after connect
+    if (!m_protocol) return;
     m_protocol->read_fpga_version(
         [this](const ControlFrame& r) {
+            // Check if this object still exists before accessing members
+            if (!m_lbl_fw_version) return;
             QString ver = QString::fromUtf8(r.data).trimmed();
             if (ver.isEmpty()) ver = "(empty)";
             m_lbl_fw_version->setText(ver);
             log(QString("FPGA 固件版本: %1").arg(ver));
         },
-        [this]() { log_error("读取 FPGA 固件版本超时"); });
+        [this]() { 
+            if (!this) return;  // Redundant but safe
+            log_error("读取 FPGA 固件版本超时"); 
+        });
 }
 
 void MainWindow::on_disconnected() {

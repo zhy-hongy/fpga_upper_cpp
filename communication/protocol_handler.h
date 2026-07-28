@@ -118,6 +118,7 @@ private:
     UDPDataThread* m_data = nullptr;
     QTimer* m_timeout_timer = nullptr;
     std::mt19937 m_rng;
+    bool m_is_destroying = false;
 };
 
 #endif // PROTOCOL_HANDLER_H

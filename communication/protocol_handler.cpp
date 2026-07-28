@@ -29,6 +29,7 @@ ProtocolHandler::ProtocolHandler(const Config& config, int sensor_id, QObject* p
 }
 
 ProtocolHandler::~ProtocolHandler() {
+    m_is_destroying = true;
     stop_all();
 }
 
@@ -595,7 +596,11 @@ void ProtocolHandler::stop_all() {
     m_data->stop();
     m_timeout_timer->stop();
     m_pending.clear();
-    emit status_message("Protocol handler stopped");
+
+    // Only emit signal if not destroying (to avoid signal during object destruction)
+    if (!m_is_destroying) {
+        emit status_message("Protocol handler stopped");
+    }
 }
 
 void ProtocolHandler::set_network_params(const QString& target_host, int target_port, int local_port) {
