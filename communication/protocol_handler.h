@@ -11,6 +11,7 @@
 #include "communication/udp_data.h"
 #include "protocol/control_frame.h"
 #include "utils/config.h"
+#include "sdk/src/frame_packet.h"
 
 constexpr double ACK_TIMEOUT = 2.0;
 constexpr int MAX_RETRIES = 3;
@@ -51,14 +52,22 @@ public:
     void read_gain(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_frame_rate(int fps, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_trigger_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_trigger_mode(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_encoder_type(int enc_type, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_encoder_type(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_encoder_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_encoder_mode(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_encoder_interval(int interval, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_encoder_interval(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    void read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
@@ -85,6 +94,7 @@ signals:
     void connected();
     void disconnected();
     void control_response(const ControlFrame& frame);
+    void frame_ready(const FramePacket& frame);
     void data_frame_info(int fps, int total, int dropped);
     void data_resolution(int sensor_id, int width, int height);
     void status_message(const QString& msg);

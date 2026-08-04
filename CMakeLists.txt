@@ -26,6 +26,8 @@ set(SOURCES
     ui/widgets.cpp
     ui/protocol_analyzer.cpp
     ui/main_window.cpp
+    sdk_test/sdk_test.cpp
+    sdk_test/mock/mock_protocol_handler.cpp
 )
 
 set(HEADERS
@@ -42,6 +44,8 @@ set(HEADERS
     ui/widgets.h
     ui/protocol_analyzer.h
     ui/main_window.h
+    sdk_test/sdk_test.h
+    sdk_test/mock/mock_protocol_handler.h
 )
 
 set(RESOURCES
@@ -51,7 +55,10 @@ set(RESOURCES
 # ── Executable ──
 add_executable(fpga_upper ${SOURCES} ${HEADERS} ${RESOURCES})
 
-target_include_directories(fpga_upper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(fpga_upper PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/include   # photon_camera.h (dllimport)
+)
 
 target_link_libraries(fpga_upper PRIVATE
     Qt6::Core
@@ -60,6 +67,20 @@ target_link_libraries(fpga_upper PRIVATE
     Qt6::Network
     Qt6::Svg
     ${OpenCV_LIBS}
+)
+
+# ── PhotonCameraSDK DLL (reuses host protocol/communication/utils sources) ──
+add_subdirectory(sdk)
+
+# 宿主以第三方身份链接并调用 PhotonCameraSDK.dll（模拟第三方用户使用）
+target_link_libraries(fpga_upper PRIVATE PhotonCameraSDK)
+
+# 部署：把 SDK DLL 复制到 exe 同级目录，运行时才能加载
+add_custom_command(TARGET fpga_upper POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:PhotonCameraSDK>
+        $<TARGET_FILE_DIR:fpga_upper>/PhotonCameraSDK.dll
+    COMMENT "Copying PhotonCameraSDK.dll next to fpga_upper.exe"
 )
 
 # ── Copy assets to build directory ──

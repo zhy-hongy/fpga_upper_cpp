@@ -219,6 +219,24 @@ void UDPDataThread::assemble_and_push(int sensor_id) {
     m_shared_queue.push_back(img);
     if (m_shared_queue.size() > 4) m_shared_queue.pop_front();
 
+    // Emit FramePacket to SDK consumers (queued connection copies the packet).
+    // Metadata rules: current FPGA protocol has no batchId/lineIndex/encoder/timestamp,
+    // so those stay 0 and their sources are marked accordingly -- never faked.
+    FramePacket pkt;
+    pkt.frameId = ++m_frame_id_seq;
+    pkt.sensorId = static_cast<uint16_t>(sensor_id);
+    pkt.batchId = 0;
+    pkt.lineIndex = 0;
+    pkt.encoder = 0;
+    pkt.timestamp = static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch() * 1000);
+    pkt.frameIdSource = META_SOURCE_SDK;
+    pkt.encoderSource = META_SOURCE_UNKNOWN;
+    pkt.timestampSource = META_SOURCE_SDK;
+    pkt.width = static_cast<uint16_t>(w);
+    pkt.height = static_cast<uint16_t>(h);
+    pkt.data = raw;
+    emit sig_frame_ready(pkt);
+
     // Statistics (1 Hz)
     m_frame_count++;
     m_fps_counter++;

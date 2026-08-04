@@ -12,6 +12,7 @@
 #include <opencv2/core.hpp>
 #include "protocol/transport_frame.h"
 #include "protocol/crc16.h"
+#include "sdk/src/frame_packet.h"
 
 constexpr int DATA_PER_PACKET = 1280;
 constexpr int FIRST_PACKET_EXTRA = 8;
@@ -56,6 +57,7 @@ public:
 signals:
     void sig_frame_info(int fps, int total, int dropped);
     void sig_resolution(int sensor_id, int width, int height);
+    void sig_frame_ready(const FramePacket& frame);
     void sig_error(const QString& msg);
     void sig_ready();
     void sig_stopped();
@@ -96,6 +98,7 @@ private:
     int m_fps = 0;
     int m_fps_counter = 0;
     QElapsedTimer m_fps_timer;
+    uint32_t m_frame_id_seq = 0;   // FramePacket::frameId 本地递增序列
 };
 
 #endif // UDP_DATA_H

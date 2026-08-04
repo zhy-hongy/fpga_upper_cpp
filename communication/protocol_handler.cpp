@@ -21,6 +21,10 @@ ProtocolHandler::ProtocolHandler(const Config& config, int sensor_id, QObject* p
     m_ctrl = new UDPWorker(bind_ip, config.control_port, 4 * 1024 * 1024, this);
     m_data = new UDPDataThread(bind_ip, config.data_port, config.recv_buffer_size, 4, this);
 
+    // 跨线程信号 (sig_frame_ready -> frame_ready) 传递自定义类型 FramePacket，
+    // 需注册 metatype 才能被 QueuedConnection 编组。
+    qRegisterMetaType<FramePacket>("FramePacket");
+
     setup_connections();
 
     m_timeout_timer = new QTimer(this);
@@ -50,6 +54,7 @@ void ProtocolHandler::setup_connections() {
     connect(m_data, &UDPDataThread::sig_cmd_received, this, &ProtocolHandler::on_raw_response);
     connect(m_data, &UDPDataThread::sig_frame_info, this, &ProtocolHandler::data_frame_info);
     connect(m_data, &UDPDataThread::sig_resolution, this, &ProtocolHandler::data_resolution);
+    connect(m_data, &UDPDataThread::sig_frame_ready, this, &ProtocolHandler::frame_ready);
     connect(m_data, &UDPDataThread::sig_error, this, [this](const QString& err) {
         emit error_occurred(err);
     });
@@ -332,6 +337,46 @@ void ProtocolHandler::set_gain(int gain, int sensor_id, std::function<void(const
 void ProtocolHandler::read_gain(int sensor_id, std::function<void(const ControlFrame&)> cb) {
     send_cmd(CMD_GAIN, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
     emit status_message("Read gain...");
+}
+
+void ProtocolHandler::read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_EXPOSURE_DELAY, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read exposure delay...");
+}
+
+void ProtocolHandler::read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_SAMPLE_RATE, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read sample rate...");
+}
+
+void ProtocolHandler::read_trigger_mode(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_TRIGGER_MODE, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read trigger mode...");
+}
+
+void ProtocolHandler::read_encoder_type(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_ENCODER_TYPE, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read encoder type...");
+}
+
+void ProtocolHandler::read_encoder_mode(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_ENCODER_MODE, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read encoder mode...");
+}
+
+void ProtocolHandler::read_encoder_interval(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_ENCODER_INTERVAL, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read encoder interval...");
+}
+
+void ProtocolHandler::read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_EXTERNAL_TRIGGER, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read external trigger...");
+}
+
+void ProtocolHandler::read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_BATCH_LENGTH, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message("Read batch length...");
 }
 
 void ProtocolHandler::set_frame_rate(int fps, int sensor_id, std::function<void(const ControlFrame&)> cb) {

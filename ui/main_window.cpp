@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "ui/widgets.h"
 #include "ui/protocol_analyzer.h"
+#include "sdk_test/sdk_test.h"
 #include "communication/protocol_handler.h"
 #include "protocol/camera_frame.h"
 #include "protocol/control_frame.h"
@@ -1134,6 +1135,10 @@ void MainWindow::build_system_info_group(QVBoxLayout* parent) {
     lay->addRow("序列号:", new QLabel("SN-20260626"));
     lay->addRow("工作状态:", new QLabel("待连接"));
 
+    m_btn_sdk_test = new QPushButton("运行 SDK 功能测试");
+    m_btn_sdk_test->setObjectName("sdk_test_btn");
+    lay->addRow(m_btn_sdk_test);
+
     parent->addWidget(g);
 }
 
@@ -1314,6 +1319,9 @@ void MainWindow::connect_signals() {
 
     // Protocol analyzer
     if (m_btn_protocol_analyzer) connect(m_btn_protocol_analyzer, &QPushButton::clicked, this, &MainWindow::on_open_protocol_analyzer);
+
+    // SDK 功能测试
+    if (m_btn_sdk_test) connect(m_btn_sdk_test, &QPushButton::clicked, this, &MainWindow::on_sdk_test);
 
     // Batch complete from views
     for (auto* view : m_image_views) {
@@ -2077,6 +2085,26 @@ void MainWindow::on_open_protocol_analyzer() {
     dlg->deleteLater();
 }
 
+void MainWindow::on_sdk_test() {
+    if (!m_protocol) { log_error("ProtocolHandler 未初始化，无法运行 SDK 测试"); return; }
+    if (m_sdk_test && m_sdk_test->isRunning()) {
+        log("SDK 测试已在运行中，忽略本次点击");
+        return;
+    }
+
+    // Mock 模式（mockMode=true）：无 FPGA 环境下验证 SDK 数据链路/设备信息/句柄管理，
+    // 控制命令预期 CAM_ERR_TIMEOUT。改为 false 即真实 FPGA 模式。
+    log("════════ 开始 SDK 功能测试（MOCK 模式，后台线程执行）════════");
+    auto* t = new SDKTest(m_protocol, m_config, true);
+    m_sdk_test = t;
+    connect(t, &SDKTest::log, this, [this](const QString& line) { log(line); });
+    connect(t, &QThread::finished, this, [this, t]() {
+        if (m_sdk_test == t) m_sdk_test = nullptr;
+        t->deleteLater();
+    });
+    t->start();
+}
+
 void MainWindow::on_load_test() {
     // Test data loading — same as Python _on_load_test
     QString assets_dir = QCoreApplication::applicationDirPath();
@@ -2174,6 +2202,7 @@ void MainWindow::log_error(const QString& msg) {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     m_display_timer->stop();
+    if (m_sdk_test && m_sdk_test->isRunning()) m_sdk_test->request_stop();
     m_protocol->stop_all();
     event->accept();
 }

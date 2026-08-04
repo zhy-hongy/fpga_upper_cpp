@@ -30,6 +30,7 @@ class QGraphicsOpacityEffect;
 class ImageView;
 class StatusBarWidget;
 class ProtocolHandler;
+class SDKTest;
 struct CameraFrame;
 struct ControlFrame;
 struct Config;
@@ -119,6 +120,7 @@ private slots:
     void on_open_protocol_analyzer();
     void on_sample_rate_changed(const QString& rate);
     void on_load_test();
+    void on_sdk_test();
 
 private:
     // UI construction
@@ -276,12 +278,16 @@ private:
     QLabel* m_lbl_pkt_val = nullptr;
     QLabel* m_lbl_res_val = nullptr;
     QPushButton* m_btn_protocol_analyzer = nullptr;
+    QPushButton* m_btn_sdk_test = nullptr;
 
     // ── Widgets: Status bar ──
     StatusBarWidget* m_status_widget = nullptr;
 
     // ── Timer ──
     QTimer* m_display_timer = nullptr;
+
+    // ── SDK 功能测试 ──
+    SDKTest* m_sdk_test = nullptr;
 };
 
 #endif // MAIN_WINDOW_H
