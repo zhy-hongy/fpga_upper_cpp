@@ -1,6 +1,9 @@
 #include "sdk_test.h"
 
+#include <functional>
+
 #include <QByteArray>
+#include <QElapsedTimer>
 
 #include "sdk_test/mock/mock_protocol_handler.h"
 
@@ -42,79 +45,77 @@ void SDKTest::on_frame_received(const FrameInfo* info) {
     ++m_frame_count;
     // 运行在 SDK CallbackWorker 线程：只发信号，不操作 UI。
     const quintptr tid = reinterpret_cast<quintptr>(QThread::currentThreadId());
-    if (m_mock_mode) {
-        // Mock 模式：验证 DataHandler 运行线程 ≠ SDKTest 线程，且帧内容在变化。
-        log_line(QString("[SDK CALLBACK] th=0x%1  frameId=%2  sensor=%3  %4x%5  size=%6  (回调线程≠测试线程: %7)")
-                     .arg(tid, 0, 16)
-                     .arg(info->frameId)
-                     .arg(info->sensorId)
-                     .arg(info->width)
-                     .arg(info->height)
-                     .arg(info->dataSize)
-                     .arg(tid != m_test_thread_id ? "是" : "否！"));
-        if (m_frame_count.load() == 1) {
-            log_line(QString("[MOCK FRAME] 首帧示例: frameId=%1 sensor=%2 %3x%4 size=%5")
-                         .arg(info->frameId).arg(info->sensorId)
-                         .arg(info->width).arg(info->height).arg(info->dataSize));
-        }
-    } else {
-        log_line(QString("   [CBK] th=0x%1  frameId=%2  sensor=%3  %4x%5  ts=%6  size=%7")
-                     .arg(tid, 0, 16)
-                     .arg(info->frameId)
-                     .arg(info->sensorId)
-                     .arg(info->width)
-                     .arg(info->height)
-                     .arg(info->timestamp)
-                     .arg(info->dataSize));
+    const bool diff_thread = (tid != m_test_thread_id);
+    log_line(QString("[DATA] th=0x%1  frameId=%2  sensor=%3  %4x%5  size=%6  ts=%7  (回调线程≠测试线程: %8)")
+                 .arg(tid, 0, 16)
+                 .arg(info->frameId)
+                 .arg(info->sensorId)
+                 .arg(info->width)
+                 .arg(info->height)
+                 .arg(info->dataSize)
+                 .arg(qulonglong(info->timestamp))
+                 .arg(diff_thread ? "是" : "否！"));
+    if (m_frame_count.load() == 1) {
+        log_line(QString("[DATA] 首帧: frameId=%1  sensor=%2  %3x%4  size=%5  (Mock 固定值 0x80 填充)")
+                     .arg(info->frameId).arg(info->sensorId)
+                     .arg(info->width).arg(info->height).arg(info->dataSize));
     }
 }
 
 void SDKTest::run() {
     m_test_thread_id = reinterpret_cast<quintptr>(QThread::currentThreadId());
-    log_line(QString("════════ SDKTest 启动（测试线程 th=0x%1，模式=%2）════════")
+    m_frame_count.store(0);
+
+    log_line(QString("════════ PhotonCameraSDK.dll C-API 验证（测试线程 th=0x%1，模式=%2）════════")
                  .arg(m_test_thread_id, 0, 16)
-                 .arg(m_mock_mode ? "MOCK" : "REAL"));
+                 .arg(m_mock_mode ? "MOCK（无 FPGA）" : "REAL"));
+
+    // 计时包装：打印 函数名 / 返回值 / 耗时(ms)，≥100ms 标红
+    auto api = [this](const QString& name, const std::function<CamError()>& fn) -> CamError {
+        QElapsedTimer t;
+        t.start();
+        const CamError e = fn();
+        const qint64 ms = t.elapsed();
+        log_line(QString("%1 -> %2   耗时=%3 ms %4")
+                     .arg(name, -58)
+                     .arg(int(e))
+                     .arg(ms)
+                     .arg(ms >= 100 ? "<-- 超阈值(≥100ms)" : ""));
+        return e;
+    };
 
     // 1) SDK 初始化
-    CamError e = Cam_Initialize();
-    log_line(QString("1. Cam_Initialize()                      -> %1").arg(int(e)));
+    CamError e = api("Cam_Initialize", [] { return Cam_Initialize(); });
     if (e != CAM_OK) { log_line("初始化失败，测试中止"); return; }
 
-    // 2) 连接 ProtocolHandler：Mock 模式用 MockProtocolHandler，真实模式用宿主已有
+    // 2) 附加 ProtocolHandler：Mock 模式用 MockProtocolHandler，真实模式用宿主已有
     ProtocolHandler* attach = m_mock_mode ? static_cast<ProtocolHandler*>(m_mock) : m_protocol;
-    log_line(QString("2. Cam_AttachProtocolHandler(0x%1)  [%2]")
+    log_line(QString("  附加 ProtocolHandler 0x%1 [%2]")
                  .arg(reinterpret_cast<quintptr>(attach), 0, 16)
                  .arg(m_mock_mode ? "MOCK" : "REAL"));
-    e = Cam_AttachProtocolHandler(attach);
-    log_line(QString("   Cam_AttachProtocolHandler()           -> %1").arg(int(e)));
+    e = api("Cam_AttachProtocolHandler", [attach] { return Cam_AttachProtocolHandler(attach); });
     if (e != CAM_OK) { log_line("Attach 失败，测试中止"); Cam_Finalize(); return; }
 
     // 3) 打开设备
     CameraHandle handle = nullptr;
-    e = Cam_OpenDevice(0, &handle);
-    log_line(QString("3. Cam_OpenDevice(0)                     -> %1   handle=0x%2")
-                 .arg(int(e))
-                 .arg(reinterpret_cast<quintptr>(handle), 0, 16));
+    e = api("Cam_OpenDevice(0)", [&handle] { return Cam_OpenDevice(0, &handle); });
     if (e != CAM_OK) { log_line("打开设备失败，测试中止"); Cam_Finalize(); return; }
     m_handle = handle;
 
-    // 4) 获取设备信息
-    DeviceInformation info;
-    e = Cam_GetDeviceInformation(handle, &info);
-    log_line(QString("4. Cam_GetDeviceInformation()            -> %1").arg(int(e)));
+    // 4) 设备信息
+    DeviceInformation dinfo;
+    e = api("Cam_GetDeviceInformation", [&] { return Cam_GetDeviceInformation(handle, &dinfo); });
     if (e == CAM_OK) {
-        log_line(QString("     device status = %1").arg(info.status));
-        const QString ver = QString::fromLatin1(info.fpgaVersion);
-        if (m_mock_mode)
-            log_line(QString("     fpgaVersion   = \"%1\"  (SDK 无版本命令；Mock 期望 = \"%2\")")
-                         .arg(ver, m_mock->mock_fpga_version()));
-        else
-            log_line(QString("     fpgaVersion   = \"%1\"  (当前协议无读取命令时为空)").arg(ver));
+        log_line(QString("   status=%1  fpgaVersion=\"%2\"")
+                     .arg(dinfo.status)
+                     .arg(QString::fromLatin1(dinfo.fpgaVersion)));
+        if (m_mock_mode) {
+            log_line(QString("   (Mock 期望 fpgaVersion=\"%1\")").arg(m_mock->mock_fpga_version()));
+        }
     }
 
     // 5) 注册数据回调
-    e = Cam_RegisterDataHandler(handle, &SDKTest::on_data, this);
-    log_line(QString("5. Cam_RegisterDataHandler()             -> %1").arg(int(e)));
+    e = api("Cam_RegisterDataHandler", [&] { return Cam_RegisterDataHandler(handle, &SDKTest::on_data, this); });
     if (e != CAM_OK) {
         log_line("注册回调失败，测试中止");
         Cam_CloseDevice(handle);
@@ -122,78 +123,119 @@ void SDKTest::run() {
         return;
     }
 
-    // 6) 控制命令 + 采集
-    if (m_mock_mode) {
-        // Mock 模式：基类传输未启动 → 控制命令预期 CAM_ERR_TIMEOUT（不触碰 UDP）。
-        log_line("[MOCK] 控制命令走真实(未启动)传输，预期 CAM_ERR_TIMEOUT");
-        SensorConfig cfg{};
-        cfg.exposureTime = 2000; cfg.gain = 3; cfg.exposureDelay = 100; cfg.sampleRate = 3000;
-        e = Cam_SetSensorConfig(handle, 1, &cfg);
-        log_line(QString("6a. Cam_SetSensorConfig(exp=2000,gain=3) -> %1").arg(int(e)));
-
-        SensorConfig got{};
-        e = Cam_GetSensorConfig(handle, 1, &got);
-        log_line(QString("6b. Cam_GetSensorConfig()                -> %1").arg(int(e)));
-
-        log_line("6c. Cam_StartCapture(handle, 0)  广播 1~4（MOCK 预期 TIMEOUT）...");
-        e = Cam_StartCapture(handle, 0);
-        log_line(QString("    Cam_StartCapture()                  -> %1").arg(int(e)));
-        log_line("[MOCK] 显式启动 Mock 帧生成（40ms/帧，sensor 1~4 循环）");
-        m_mock->start_mock_frames();
-    } else {
-        // 真实模式：sensorId=0 广播 1~4；FPGA 未连接时各等 ACK 约 4×4s
-        log_line("6. Cam_StartCapture(handle, 0)  广播 1~4（FPGA 未连接时约等 16s）...");
-        e = Cam_StartCapture(handle, 0);
-        log_line(QString("   Cam_StartCapture()                    -> %1").arg(int(e)));
+    // 6) 超时测试：采集开始前 GetFrameSync（无帧可返回）→ 预期 CAM_ERR_TIMEOUT
+    log_line("── 超时测试：未开始采集即 GetFrameSync ──");
+    QByteArray syncBuf(4 * 1024 * 1024, '\0');
+    FrameInfo finfo;
+    {
+        QElapsedTimer t;
+        t.start();
+        e = Cam_GetFrameSync(handle, 1, &finfo, syncBuf.data(),
+                             static_cast<uint32_t>(syncBuf.size()), 500);
+        const qint64 ms = t.elapsed();
+        log_line(QString("Cam_GetFrameSync(无帧, timeout=500ms) -> %1   耗时=%2 ms（预期 CAM_ERR_TIMEOUT，耗时≈500ms 为超时等待路径）")
+                     .arg(int(e)).arg(ms));
     }
 
-    // 7) 收集回调约 2 秒
-    log_line("等待帧回调（2 秒）...");
-    for (int i = 0; i < 20; ++i) {
-        QThread::msleep(100);
-        if (m_stop.load()) break;
-    }
-    log_line(QString("   [TEST] 累计回调帧数 = %1").arg(m_frame_count.load()));
-
-    // 8) 同步取帧：周期调用（本测试线程即"定时器线程"）
-    log_line("7. Cam_GetFrameSync() 周期取帧（间隔 500ms × 5 次）");
-    QByteArray buf(4 * 1024 * 1024, '\0');
-    for (int i = 0; i < 5; ++i) {
-        if (m_stop.load()) break;
-        FrameInfo finfo;
-        e = Cam_GetFrameSync(handle, 1, &finfo, buf.data(),
-                             static_cast<uint32_t>(buf.size()), 1000);
-        if (e == CAM_OK) {
-            log_line(QString("   [SYNC] th=0x%1  frameId=%2  %3x%4  size=%5")
-                         .arg(reinterpret_cast<quintptr>(QThread::currentThreadId()), 0, 16)
-                         .arg(finfo.frameId)
-                         .arg(finfo.width)
-                         .arg(finfo.height)
-                         .arg(finfo.dataSize));
-        } else {
-            log_line(QString("   [SYNC] 取帧失败 -> %1").arg(int(e)));
+    // 7) Get 配置：Mock 返回默认测试数据
+    log_line("── Get 配置（Mock 应返回默认测试数据）──");
+    SensorConfig sc{};
+    e = api("Cam_GetSensorConfig", [&] { return Cam_GetSensorConfig(handle, 1, &sc); });
+    if (e == CAM_OK) {
+        log_line(QString("   exposure=%1  gain=%2  expDelay=%3  sampleRate=%4")
+                     .arg(sc.exposureTime).arg(sc.gain).arg(sc.exposureDelay).arg(sc.sampleRate));
+        if (m_mock_mode) {
+            const bool ok = sc.exposureTime == uint32_t(m_mock->default_exposure()) &&
+                            sc.gain == uint32_t(m_mock->default_gain()) &&
+                            sc.exposureDelay == uint32_t(m_mock->default_exposure_delay()) &&
+                            sc.sampleRate == uint32_t(m_mock->default_sample_rate());
+            log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
         }
-        QThread::msleep(500);
+    }
+    TriggerConfig tc{};
+    e = api("Cam_GetTriggerConfig", [&] { return Cam_GetTriggerConfig(handle, 1, &tc); });
+    if (e == CAM_OK) {
+        log_line(QString("   triggerMode=%1  encType=%2  encMode=%3  encStep=%4  extEnable=%5")
+                     .arg(tc.triggerMode).arg(tc.encoderType)
+                     .arg(tc.encoderInputMode).arg(tc.encoderStep).arg(tc.externalEnable));
+        if (m_mock_mode) {
+            const bool ok = tc.triggerMode == uint16_t(m_mock->default_trigger_mode()) &&
+                            tc.encoderType == uint16_t(m_mock->default_encoder_type()) &&
+                            tc.encoderInputMode == uint16_t(m_mock->default_encoder_input_mode()) &&
+                            tc.encoderStep == uint32_t(m_mock->default_encoder_step()) &&
+                            tc.externalEnable == uint16_t(m_mock->default_external_trigger());
+            log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
+        }
+    }
+    BatchConfig bc{};
+    e = api("Cam_GetBatchConfig", [&] { return Cam_GetBatchConfig(handle, 1, &bc); });
+    if (e == CAM_OK) {
+        log_line(QString("   batchLength=%1").arg(bc.length));
+        if (m_mock_mode) {
+            const bool ok = bc.length == uint16_t(m_mock->default_batch_length());
+            log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
+        }
     }
 
-    // 9) 停止流程
-    if (m_mock_mode) {
-        log_line("8. Cam_StopCapture(0)  广播 1~4（MOCK 预期 TIMEOUT）...");
-        e = Cam_StopCapture(handle, 0);
-        log_line(QString("   Cam_StopCapture()                    -> %1").arg(int(e)));
-        log_line(QString("[MOCK] 停止 Mock 帧生成（已生成 %1 帧）").arg(m_mock->generated_frames()));
-        m_mock->stop_mock_frames();
+    // 8) Set 配置：写命令立即 ACK 成功（roi/pixelPitch/z 等无协议字段必须保持 0）
+    log_line("── Set 配置（写命令应立即 ACK 成功，<100ms）──");
+    SensorConfig setSc{};
+    setSc.exposureTime = 2000; setSc.gain = 3; setSc.exposureDelay = 100; setSc.sampleRate = 3000;
+    e = api("Cam_SetSensorConfig", [&] { return Cam_SetSensorConfig(handle, 1, &setSc); });
+    TriggerConfig setTc{};
+    setTc.triggerMode = 1; setTc.encoderType = 1; setTc.encoderInputMode = 1;
+    setTc.encoderStep = 100; setTc.externalEnable = 0;
+    e = api("Cam_SetTriggerConfig", [&] { return Cam_SetTriggerConfig(handle, 1, &setTc); });
+    BatchConfig setBc{};
+    setBc.length = 200;
+    e = api("Cam_SetBatchConfig", [&] { return Cam_SetBatchConfig(handle, 1, &setBc); });
+
+    // 9) 开始采集：Mock 覆盖立即 ACK + 启动 40ms 帧生成
+    e = api("Cam_StartCapture(1)", [&] { return Cam_StartCapture(handle, 1); });
+    if (e == CAM_OK) {
+        // 10) 收集 DataHandler 回调约 2 秒
+        log_line("采集已启动，等待 DataHandler 回调 2 秒...");
+        for (int i = 0; i < 20; ++i) {
+            QThread::msleep(100);
+            if (m_stop.load()) break;
+        }
+        log_line(QString("[结果] 回调累计帧数 = %1").arg(m_frame_count.load()));
+
+        // 11) GetFrameSync 同步取帧轮询（验证同步链路 + 线程）
+        log_line("── Cam_GetFrameSync 同步取帧（500ms × 5 次）──");
+        for (int i = 0; i < 5; ++i) {
+            if (m_stop.load()) break;
+            FrameInfo sfinfo;
+            QElapsedTimer t;
+            t.start();
+            e = Cam_GetFrameSync(handle, 1, &sfinfo, syncBuf.data(),
+                                 static_cast<uint32_t>(syncBuf.size()), 1000);
+            const qint64 ms = t.elapsed();
+            if (e == CAM_OK) {
+                log_line(QString("   [SYNC] th=0x%1  帧 %2  同步耗时=%3 ms：sensor=%4  %5x%6  size=%7")
+                             .arg(reinterpret_cast<quintptr>(QThread::currentThreadId()), 0, 16)
+                             .arg(sfinfo.frameId).arg(ms).arg(sfinfo.sensorId)
+                             .arg(sfinfo.width).arg(sfinfo.height).arg(sfinfo.dataSize));
+            } else {
+                log_line(QString("   [SYNC] 取帧失败 -> %1 (%2 ms)").arg(int(e)).arg(ms));
+            }
+            QThread::msleep(500);
+        }
     } else {
-        e = Cam_StopCapture(handle, 0);
-        log_line(QString("8. Cam_StopCapture(0)                    -> %1").arg(int(e)));
+        log_line("开始采集失败；仍执行停止/收尾流程");
     }
-    e = Cam_UnregisterDataHandler(handle);
-    log_line(QString("   Cam_UnregisterDataHandler()           -> %1").arg(int(e)));
-    e = Cam_CloseDevice(handle);
-    log_line(QString("   Cam_CloseDevice()                     -> %1").arg(int(e)));
-    m_handle = nullptr;
-    e = Cam_Finalize();
-    log_line(QString("   Cam_Finalize()                        -> %1").arg(int(e)));
 
-    log_line("════════ SDKTest 结束（CallbackWorker 已随设备关闭退出，无线程泄漏）════════");
+    // 12) 停止采集：Mock 覆盖立即 ACK + 停止帧生成
+    e = api("Cam_StopCapture(1)", [&] { return Cam_StopCapture(handle, 1); });
+    if (m_mock_mode) {
+        log_line(QString("[MOCK] Mock 本次共生成 %1 帧").arg(m_mock->generated_frames()));
+    }
+
+    // 13) 收尾
+    e = api("Cam_UnregisterDataHandler", [&] { return Cam_UnregisterDataHandler(handle); });
+    e = api("Cam_CloseDevice", [&] { return Cam_CloseDevice(handle); });
+    m_handle = nullptr;
+    e = api("Cam_Finalize", [] { return Cam_Finalize(); });
+
+    log_line("════════ SDKTest 结束（无 UDP 活动、无额外线程泄漏）════════");
 }

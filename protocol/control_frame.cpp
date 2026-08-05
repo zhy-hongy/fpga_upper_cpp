@@ -49,6 +49,24 @@ ControlFrame unpack_cmd_frame(const QByteArray& frame) {
         throw std::runtime_error("Control frame tail error");
     }
 
+    // Verify CRC: covers everything from offset 2 to (size - 4)
+    // Frame structure: [Header(2)] [Data(size-6)] [CRC(2)] [Tail(2)]
+    if (frame.size() < 6) {
+        throw std::runtime_error("Control frame too short for CRC verification");
+    }
+
+    uint16_t received_crc = read16(frame.size() - 4);
+    uint16_t calculated_crc = crc16_modbus(
+        reinterpret_cast<const uint8_t*>(frame.constData()) + 2,
+        frame.size() - 6);
+
+    if (received_crc != calculated_crc) {
+        throw std::runtime_error("Control frame CRC error: expected 0x" +
+            std::string(QByteArray().setNum(calculated_crc, 16).constData()) +
+            ", got 0x" +
+            std::string(QByteArray().setNum(received_crc, 16).constData()));
+    }
+
     ControlFrame cf;
     cf.device_type = read16(2);
     cf.cmd_code = read16(4);

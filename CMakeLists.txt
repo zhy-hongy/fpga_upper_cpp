@@ -93,7 +93,7 @@ add_custom_command(TARGET fpga_upper POST_BUILD
 # ── Windows-specific: hide console + deploy Qt plugins ──
 if(WIN32)
     # Hide the console window (remove if you want console output for debugging)
-    set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
+    # set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
 
     # Helper: generator expression for vcpkg plugin directory
     set(_QT_PLUGIN_DIR ${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET})

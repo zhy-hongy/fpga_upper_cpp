@@ -20,16 +20,20 @@ class MockProtocolHandler;
 //   - 自身是一个 QThread：控制 API 阻塞等待 ACK，需在非 UI 线程调用；
 //     "定时器线程"即本线程内的 Cam_GetFrameSync 周期轮询循环
 //
-// mockMode=true（Mock 模式，用户决策"保持 ProtocolHandler 不动"）：
-//   - 附加 MockProtocolHandler（基类不启动 → 无 socket），控制命令走真实(未启动)
-//     传输、各等 ACK 超时 → 预期 CAM_ERR_TIMEOUT（不触碰 UDP、无跨线程断言）
-//   - Mock 帧由 SDKTest 显式启动/停止（start/stop_mock_frames），数据链路完全走
-//     SDK：frame_ready → DataDispatcher → CallbackWorker → DataHandler
+// mockMode=true（Mock 模式，用户决策"控制方法 virtual，Mock 立即成功"）：
+//   - 附加 MockProtocolHandler（基类不启动 → 无 socket、零 UDP 活动）
+//   - ProtocolHandler 控制方法 virtual，Mock 覆盖后：写命令立即回调成功 ACK，
+//     读命令返回默认测试数据（按 adapter 的 be32/be16 解析编码）→ 全部 <100ms
+//   - Cam_StartCapture → Mock 覆盖启动 40ms 帧定时器（固定 sensor=1、1280×1024、
+//     固定值填充）；数据链路完全走 SDK：frame_ready → DataDispatcher →
+//     CallbackWorker → DataHandler
 //
-// run() 调用流程（对应需求 1~8）：
+// run() 调用流程（覆盖全部 C API 主接口 + 超时/线程验证）：
 //   Initialize → AttachProtocolHandler → OpenDevice → GetDeviceInformation
-//   → RegisterDataHandler → (控制) → StartCapture → (收帧) → GetFrameSync 轮询
-//   → StopCapture → UnregisterDataHandler → CloseDevice → Finalize
+//   → RegisterDataHandler → [超时测试: 采集前 GetFrameSync 预期 TIMEOUT]
+//   → Get/SetSensorConfig / Get/SetTriggerConfig / Get/SetBatchConfig
+//   → StartCapture → (收帧回调) → GetFrameSync 轮询 → StopCapture
+//   → UnregisterDataHandler → CloseDevice → Finalize
 //
 // 日志通过信号 log() 跨线程投递到主线程输出（回调线程不操作 UI）。
 class SDKTest : public QThread {

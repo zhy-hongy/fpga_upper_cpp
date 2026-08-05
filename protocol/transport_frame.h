@@ -15,6 +15,9 @@ constexpr uint8_t TRANSPORT_TAIL_BYTES[] = {0xDC, 0xDC};
 constexpr int RETRANSMIT_NORMAL = 0;
 constexpr int RETRANSMIT_REQUEST = 1;
 
+// 外层 transport 帧【含 CRC16】：帧头(2)+唯一帧ID(2)+总包数(2)+当前包编号(2)
+// +重传说明(4)+空(4)+数据长度(2)+CRC16(2)+帧尾(2) = 22。CRC 为 CRC-16/MODBUS，
+// 覆盖帧头之后、CRC 字段之前（含 Data）的全部数据。
 constexpr int TRANSPORT_OVERHEAD = 22;  // 2+2+2+2+4+4+2+2+2
 constexpr int MAX_UDP_PAYLOAD = 1472;
 constexpr int MAX_TRANSPORT_DATA = MAX_UDP_PAYLOAD - TRANSPORT_OVERHEAD; // 1450

@@ -38,13 +38,16 @@ QByteArray pack_transport_frame(const QByteArray& data, int packet_id,
     append16(static_cast<uint16_t>(data.size()));
     body.append(data);
 
+    // 外层 transport 帧【含 CRC16】：CRC-16/MODBUS 覆盖帧头之后、CRC 字段之前全部数据。
     uint16_t crc = crc16_modbus(body);
 
     QByteArray frame;
     frame.append(static_cast<char>(0xAB));
     frame.append(static_cast<char>(0xAB));
     frame.append(body);
-    append16(crc);
+    // Append CRC to frame (not body!)
+    frame.append(static_cast<char>((crc >> 8) & 0xFF));
+    frame.append(static_cast<char>(crc & 0xFF));
     frame.append(static_cast<char>(0xDC));
     frame.append(static_cast<char>(0xDC));
     return frame;
@@ -85,7 +88,7 @@ TransportFrame unpack_transport_frame(const QByteArray& frame) {
         throw std::runtime_error("Transport frame tail error");
     }
 
-    // CRC check
+    // CRC check：CRC-16/MODBUS 覆盖帧头之后、CRC 字段之前全部数据。
     uint16_t crc_received = read16(frame.size() - 4);
     uint16_t crc_computed = crc16_modbus(frame.mid(2, frame.size() - 6));
     if (crc_received != crc_computed) {
@@ -98,6 +101,9 @@ TransportFrame unpack_transport_frame(const QByteArray& frame) {
     tf.current_packet = read16(6);
     tf.retransmit = static_cast<int>(read32(8));
     tf.data_len = read16(16);
+    if (18 + tf.data_len > frame.size() - 2) {
+        throw std::runtime_error("Transport frame data length error");
+    }
     tf.data = frame.mid(18, tf.data_len);
     return tf;
 }

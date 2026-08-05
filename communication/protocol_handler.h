@@ -46,32 +46,34 @@ public:
     int last_pkt_id() const;
 
     // High-level API - Camera controls
-    void set_exposure(int us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_gain(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    // 这些方法声明为 virtual：SDK 的 ProtocolAdapter 以 ProtocolHandler* 调用它们，
+    // Mock 测试子类需要覆盖以立即返回成功 ACK（真实模式无子类，virtual 等价静态绑定）。
+    virtual void set_exposure(int us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_gain(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void set_frame_rate(int fps, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_trigger_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_trigger_mode(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_encoder_type(int enc_type, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_encoder_type(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_encoder_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_encoder_mode(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_encoder_interval(int interval, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_encoder_interval(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_trigger_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_trigger_mode(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_encoder_type(int enc_type, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_encoder_type(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_encoder_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_encoder_mode(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_encoder_interval(int interval, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_encoder_interval(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
 
     // FPGA version
     void read_fpga_version(std::function<void(const ControlFrame&)> callback = nullptr,
