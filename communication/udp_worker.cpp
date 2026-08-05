@@ -31,7 +31,8 @@ void UDPWorker::run() {
     last_hex_log.start();
 
     while (m_running) {
-        if (m_sock->waitForReadyRead(1000)) {
+        flush_pending_sends();
+        if (m_sock->waitForReadyRead(100)) {
             while (m_sock->hasPendingDatagrams()) {
                 QByteArray data;
                 data.resize(static_cast<int>(m_sock->pendingDatagramSize()));
@@ -81,19 +82,37 @@ bool UDPWorker::is_ready() const {
     return m_sock != nullptr && m_running;
 }
 
+// 线程安全发送：socket 由 run()（UDPWorker 线程）创建并拥有，
+// writeDatagram 不能在调用线程（主线程）直接执行——会触发 Qt 跨线程
+// sendEvent 断言。这里只入队，真正写 socket 由 run() 循环内 flush_pending_sends()
+// 在 UDPWorker 线程完成。
 bool UDPWorker::send_cmd(const QString& ip, int port, const QByteArray& data) {
     if (!is_ready()) {
         emit sig_error("Send failed: socket not ready");
         return false;
     }
-    qint64 sent = m_sock->writeDatagram(data, QHostAddress(ip), port);
-    return sent == data.size();
+    QMutexLocker locker(&m_send_mutex);
+    m_send_queue.enqueue({ip, port, data});
+    return true;
+}
+
+void UDPWorker::flush_pending_sends() {
+    QQueue<PendingDatagram> to_send;
+    {
+        QMutexLocker locker(&m_send_mutex);
+        if (m_send_queue.isEmpty()) return;
+        to_send.swap(m_send_queue);
+    }
+    while (!to_send.isEmpty()) {
+        PendingDatagram d = to_send.dequeue();
+        if (m_sock)
+            m_sock->writeDatagram(d.data, QHostAddress(d.ip), d.port);
+    }
 }
 
 void UDPWorker::stop() {
     m_running = false;
-    if (m_sock) {
-        m_sock->close();
-    }
+    // 不在调用线程 close()：socket 由 UDPWorker 线程拥有，跨线程 close 同样触发
+    // Qt 断言。run() 循环退出时会在本线程内关闭并清理 socket。
     wait(3000);
 }

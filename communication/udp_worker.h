@@ -4,6 +4,7 @@
 #include <QThread>
 #include <QUdpSocket>
 #include <QMutex>
+#include <QQueue>
 #include "protocol/transport_frame.h"
 
 class UDPWorker : public QThread {
@@ -30,12 +31,22 @@ protected:
     void run() override;
 
 private:
+    struct PendingDatagram {
+        QString ip;
+        int port;
+        QByteArray data;
+    };
+
+    void flush_pending_sends();
+
     QString m_host;
     int m_port;
     int m_recv_buffer;
     volatile bool m_running = false;
     QUdpSocket* m_sock = nullptr;
     TransportAssembler m_transport_asm;
+    QMutex m_send_mutex;
+    QQueue<PendingDatagram> m_send_queue;
 };
 
 #endif // UDP_WORKER_H

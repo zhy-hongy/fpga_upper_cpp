@@ -274,8 +274,7 @@ std::deque<cv::Mat>& UDPDataThread::get_sensor_queue(int sensor_id) {
 
 void UDPDataThread::stop() {
     m_running = false;
-    if (m_sock) {
-        m_sock->close();
-    }
+    // 不在调用线程 close()：socket 由 UDPDataThread 线程拥有，跨线程 close 触发
+    // Qt 断言。run() 循环退出时会在本线程内关闭并清理 socket。
     wait(3000);
 }

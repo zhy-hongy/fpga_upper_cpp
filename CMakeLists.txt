@@ -113,6 +113,15 @@ if(WIN32)
     qt_deploy_plugin_subdir(platforms)
     qt_deploy_plugin_subdir(imageformats)
 
+    # Qt6Svg DLL: imageformats/qsvg*.dll 插件依赖它，但 exe 未直接引用 Qt6Svg 符号
+    # （链接器将其从导入表剔除），自动依赖部署不会带上 → 手动复制，否则 SVG 全部加载失败。
+    add_custom_command(TARGET fpga_upper POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<IF:$<CONFIG:Debug>,${_QT_PLUGIN_DEBUG_DIR}/bin/Qt6Svgd.dll,${_QT_PLUGIN_DIR}/bin/Qt6Svg.dll>"
+            "$<TARGET_FILE_DIR:fpga_upper>/$<IF:$<CONFIG:Debug>,Qt6Svgd.dll,Qt6Svg.dll>"
+        COMMENT "Deploying Qt6Svg DLL for $<CONFIG>..."
+    )
+
     # Warn if Qt6Svg DLL is missing from the output (link dependency)
     add_custom_command(TARGET fpga_upper POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "--- Qt plugins deployed ---"
