@@ -12,79 +12,144 @@ MockProtocolHandler::MockProtocolHandler(const Config& config, QObject* parent)
     connect(m_frame_timer, &QTimer::timeout, this, [this] { generate_frame(); });
 }
 
-// ── 控制命令覆盖：立即回调成功 ACK / 默认测试数据 ──
+// ── 发送命令捕获：复用真实打包路径（build_command_frame + split_into_transport_frames）──
 
-void MockProtocolHandler::set_exposure(int, int, std::function<void(const ControlFrame&)> callback) {
+QByteArray MockProtocolHandler::emit_command(int cmd_code, int rw,
+                                             const QByteArray& data,
+                                             int sensor_id) {
+    int msg_id = 0;
+    const QByteArray ctrl = build_command_frame(cmd_code, rw, data, sensor_id, &msg_id);
+    const int device_type = (sensor_id >= 0) ? sensor_id : DEV_SENSOR1;
+    const QVector<QByteArray> tfs = split_into_transport_frames(ctrl);
+
+    QByteArray first;
+    for (const QByteArray& tf : tfs) {
+        record_sent(cmd_code, device_type, rw, data, tf);
+        if (first.isEmpty()) first = tf;
+    }
+    return first;
+}
+
+void MockProtocolHandler::record_sent(int cmd_code, int device_type, int rw,
+                                      const QByteArray& data,
+                                      const QByteArray& transport_frame) {
+    QMutexLocker locker(&m_cmd_mutex);
+    m_sent_cmds.append({cmd_code, device_type, rw, data, transport_frame});
+}
+
+QVector<MockSentCmd> MockProtocolHandler::take_sent_commands() {
+    QMutexLocker locker(&m_cmd_mutex);
+    QVector<MockSentCmd> out = m_sent_cmds;
+    m_sent_cmds.clear();
+    return out;
+}
+
+int MockProtocolHandler::sent_command_count() const {
+    QMutexLocker locker(&m_cmd_mutex);
+    return m_sent_cmds.size();
+}
+
+// ── 控制命令覆盖：立即回调成功 ACK / 默认测试数据，并记录"已发送"的命令帧 ──
+
+void MockProtocolHandler::set_exposure(int us, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_EXPOSURE_TIME, RW_WRITE, be32(static_cast<uint32_t>(us)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_exposure(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_EXPOSURE_TIME, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be32(static_cast<uint32_t>(default_exposure())));
 }
-void MockProtocolHandler::set_gain(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_GAIN, RW_WRITE, be32(static_cast<uint32_t>(gain)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_gain(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_gain(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_GAIN, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be32(static_cast<uint32_t>(default_gain())));
 }
-void MockProtocolHandler::set_exposure_delay(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_EXPOSURE_DELAY, RW_WRITE, be32(static_cast<uint32_t>(delay_us)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_exposure_delay(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_EXPOSURE_DELAY, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be32(static_cast<uint32_t>(default_exposure_delay())));
 }
-void MockProtocolHandler::set_sample_rate(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_SAMPLE_RATE, RW_WRITE, be32(static_cast<uint32_t>(rate_hz)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_sample_rate(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_SAMPLE_RATE, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be32(static_cast<uint32_t>(default_sample_rate())));
 }
-void MockProtocolHandler::set_trigger_mode(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_trigger_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_TRIGGER_MODE, RW_WRITE, be16(static_cast<uint16_t>(mode)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_trigger_mode(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_trigger_mode(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_TRIGGER_MODE, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be16(static_cast<uint16_t>(default_trigger_mode())));
 }
-void MockProtocolHandler::set_encoder_type(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_encoder_type(int enc_type, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_ENCODER_TYPE, RW_WRITE, be16(static_cast<uint16_t>(enc_type)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_encoder_type(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_encoder_type(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_ENCODER_TYPE, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be16(static_cast<uint16_t>(default_encoder_type())));
 }
-void MockProtocolHandler::set_encoder_mode(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_encoder_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_ENCODER_MODE, RW_WRITE, be16(static_cast<uint16_t>(mode)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_encoder_mode(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_encoder_mode(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_ENCODER_MODE, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be16(static_cast<uint16_t>(default_encoder_input_mode())));
 }
-void MockProtocolHandler::set_encoder_interval(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_encoder_interval(int interval, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_ENCODER_INTERVAL, RW_WRITE, be32(static_cast<uint32_t>(interval)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_encoder_interval(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_encoder_interval(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_ENCODER_INTERVAL, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be32(static_cast<uint32_t>(default_encoder_step())));
 }
-void MockProtocolHandler::set_external_trigger(bool, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    QByteArray payload(2, '\0');
+    if (enabled) payload[1] = 0x01;
+    emit_command(CMD_EXTERNAL_TRIGGER, RW_WRITE, payload, sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_external_trigger(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_EXTERNAL_TRIGGER, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be16(static_cast<uint16_t>(default_external_trigger())));
 }
-void MockProtocolHandler::set_batch_length(int, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_BATCH_LENGTH, RW_WRITE, be16(static_cast<uint16_t>(count)), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::read_batch_length(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_BATCH_LENGTH, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be16(static_cast<uint16_t>(default_batch_length())));
 }
-void MockProtocolHandler::set_batch_control(bool, int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    QByteArray payload(2, '\0');
+    if (start) payload[1] = 0x01;
+    emit_command(CMD_BATCH_CONTROL, RW_WRITE, payload, sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::reset_buffer(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_RESET_BUFFER, RW_WRITE, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback));
 }
-void MockProtocolHandler::start_capture(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_START_STOP, RW_WRITE, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback));
     start_mock_frames();
 }
-void MockProtocolHandler::stop_capture(int, std::function<void(const ControlFrame&)> callback) {
+void MockProtocolHandler::stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_START_STOP, RW_WRITE, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback));
     stop_mock_frames();
 }
@@ -147,6 +212,7 @@ QByteArray MockProtocolHandler::be16(uint16_t v) {
 void MockProtocolHandler::reply(std::function<void(const ControlFrame&)> cb,
                                 const QByteArray& data) {
     if (!cb) return;
+    if (m_silent_acks.load()) return;   // 静默模式：模拟无 ACK（超时测试）
     ControlFrame frame;
     frame.device_type = DEV_SENSOR1;
     frame.cmd_code = 0;

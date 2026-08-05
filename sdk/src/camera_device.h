@@ -11,6 +11,7 @@
 #include "sdk/src/protocol_adapter.h"
 #include "sdk/src/data_dispatcher.h"
 #include "sdk/src/callback_worker.h"
+#include "sdk/src/command_manager.h"
 
 // CameraDevice 是 SDK 内部设备对象，CameraHandle 句柄即指向它。
 //
@@ -42,6 +43,7 @@ public:
     ProtocolAdapter* adapter() { return &m_adapter; }
     DataDispatcher* dispatcher() { return m_dispatcher; }
     CallbackWorker* worker() { return m_worker; }
+    CommandManager* command_manager() { return m_cmdMgr; }
 
     void open() { m_open = true; }
     void close() { m_open = false; }
@@ -58,6 +60,7 @@ private:
 
     DataDispatcher* m_dispatcher = nullptr;   // owned
     CallbackWorker* m_worker = nullptr;       // owned（SDK 唯一新增线程）
+    CommandManager* m_cmdMgr = nullptr;       // owned（SDK 异步控制命令管理线程）
     QMetaObject::Connection m_frameConn;      // ProtocolHandler::frame_ready → dispatcher
 };
 

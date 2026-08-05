@@ -41,7 +41,8 @@ enum CamError : int32_t {
     CAM_ERR_BUFFER_TOO_SMALL = -8,  // 缓冲区不足
     CAM_ERR_CRC_FAILED       = -9,  // EEPROM/帧 CRC 校验失败
     CAM_ERR_DEVICE_BUSY      = -10, // 设备忙
-    CAM_ERR_NOT_SUPPORTED    = -11  // 不支持的功能
+    CAM_ERR_NOT_SUPPORTED    = -11, // 不支持的功能
+    CAM_PENDING              = 100  // 异步命令已提交，结果经回调通知（非阻塞）
 };
 
 enum DeviceRunState : uint32_t {
@@ -158,6 +159,17 @@ typedef void(CAM_CALL *DataHandler)(
     void* pUserData
 );
 
+// 异步控制命令结果回调（全异步非阻塞 API 使用）
+//   result:     CAM_OK（ACK 正常返回）/ CAM_ERR_TIMEOUT（超时）/ CAM_ERR_UNKNOWN（投递失败等）
+//   commandId:  本次命令唯一 ID（由 SDK 分配，与调用方无关，仅用于日志/关联）
+//   pUserData:  调用方透传指针
+// 注意：回调在 SDK 内部 CommandManager 线程执行，绝不运行在 UDP / UI / 调用线程。
+typedef void(CAM_CALL *CommandResultCallback)(
+    CamError result,
+    uint16_t commandId,
+    void* pUserData
+);
+
 // =========================================================================
 // 4. SDK API 导出函数
 // =========================================================================
@@ -209,6 +221,24 @@ CAM_API CamError CAM_CALL Cam_ResetBuffer(CameraHandle handle, uint16_t sensorId
 CAM_API CamError CAM_CALL Cam_RegisterDataHandler(CameraHandle handle, DataHandler handler, void* pUserData);
 CAM_API CamError CAM_CALL Cam_UnregisterDataHandler(CameraHandle handle);
 CAM_API CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorId, FrameInfo* pFrameInfo, void* pDataBuf, uint32_t bufSize, uint32_t timeoutMs);
+
+// 4.10 异步非阻塞控制 API（立即返回 CAM_PENDING，结果经 CommandResultCallback 通知）
+// 说明：
+//   - 调用后不等待 FPGA ACK，立即返回 CAM_PENDING；ACK 或超时后回调通知。
+//   - timeoutMs 为本次命令超时（ms），超时后回调 result=CAM_ERR_TIMEOUT。
+//   - Get*Async：调用方传入输出指针，SDK 在 ACK 到达、回调触发前填充其值；
+//     调用方需保证该指针在回调前有效。
+CAM_API CamError CAM_CALL Cam_StartCaptureAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_StopCaptureAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_SetSensorConfigAsync(CameraHandle handle, uint16_t sensorId, const SensorConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_GetSensorConfigAsync(CameraHandle handle, uint16_t sensorId, SensorConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_SetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId, const TriggerConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_GetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId, TriggerConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_SetBatchConfigAsync(CameraHandle handle, uint16_t sensorId, const BatchConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_GetBatchConfigAsync(CameraHandle handle, uint16_t sensorId, BatchConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_StartBatchAsync(CameraHandle handle, uint16_t sensorId, uint32_t batchId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
 
 #ifdef __cplusplus
 }

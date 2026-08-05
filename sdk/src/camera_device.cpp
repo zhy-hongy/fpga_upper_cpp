@@ -30,7 +30,9 @@ CameraDevice::CameraDevice(ProtocolHandler* protocol, uint32_t index)
       m_adapter(protocol),   // 借用指针的适配层，不创建任何通信对象
       m_index(index),
       m_dispatcher(new DataDispatcher()),
-      m_worker(new CallbackWorker(m_dispatcher)) {
+      m_worker(new CallbackWorker(m_dispatcher)),
+      m_cmdMgr(new CommandManager()) {   // CameraDevice 非 QObject，parent=nullptr；dtor 手动 delete
+    m_adapter.set_command_manager(m_cmdMgr);
     if (m_protocol) {
         // 直连（sender 线程执行）投递到 SDK 队列；enqueue 线程安全。
         // 不修改 FramePacket 来源字段，不重新组帧/解析。
@@ -38,8 +40,9 @@ CameraDevice::CameraDevice(ProtocolHandler* protocol, uint32_t index)
             m_protocol, &ProtocolHandler::frame_ready,
             [this](const FramePacket& f) { m_dispatcher->enqueue(f); });
     }
-    // 启动 SDK 唯一新增线程（CallbackWorker）
+    // 启动 SDK 线程：数据回调 worker + 异步控制命令管理
     m_worker->start();
+    m_cmdMgr->start();
 }
 
 CameraDevice::~CameraDevice() {
@@ -48,6 +51,13 @@ CameraDevice::~CameraDevice() {
     if (m_frameConn) {
         QObject::disconnect(m_frameConn);
         m_frameConn = QMetaObject::Connection();
+    }
+    // 停异步命令管理线程：若从命令线程自身关闭设备则不能自等待（不支持，文档注明）。
+    if (m_cmdMgr) {
+        m_cmdMgr->request_stop();
+        if (QThread::currentThread() != m_cmdMgr) m_cmdMgr->wait();
+        delete m_cmdMgr;
+        m_cmdMgr = nullptr;
     }
     delete m_worker;       // 线程已停止（非回调线程自关闭场景）
     delete m_dispatcher;
@@ -390,4 +400,119 @@ CAM_API CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorI
     std::memcpy(pDataBuf, pkt.data.constData(), static_cast<size_t>(pkt.data.size()));
     frame_to_info(pkt, *pFrameInfo);
     return CAM_OK;
+}
+
+// =========================================================================
+// 4.10 异步非阻塞控制 API（立即返回 CAM_PENDING，结果经 CommandResultCallback 通知）
+//     callback 在 SDK CommandManager 线程执行，绝不运行在 UDP / UI 线程。
+// =========================================================================
+
+CAM_API CamError CAM_CALL Cam_StartCaptureAsync(CameraHandle handle, uint16_t sensorId,
+                                                uint32_t timeoutMs, CommandResultCallback callback,
+                                                void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->start_capture_async(sensorId, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_StopCaptureAsync(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs, CommandResultCallback callback,
+                                               void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->stop_capture_async(sensorId, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_SetSensorConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                   const SensorConfig* pConfig, uint32_t timeoutMs,
+                                                   CommandResultCallback callback, void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pConfig || !callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->set_sensor_config_async(sensorId, *pConfig, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_GetSensorConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                   SensorConfig* pConfig, uint32_t timeoutMs,
+                                                   CommandResultCallback callback, void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pConfig || !callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->get_sensor_config_async(sensorId, pConfig, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_SetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                    const TriggerConfig* pConfig, uint32_t timeoutMs,
+                                                    CommandResultCallback callback, void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pConfig || !callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->set_trigger_config_async(sensorId, *pConfig, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_GetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                    TriggerConfig* pConfig, uint32_t timeoutMs,
+                                                    CommandResultCallback callback, void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pConfig || !callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->get_trigger_config_async(sensorId, pConfig, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_SetBatchConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                  const BatchConfig* pConfig, uint32_t timeoutMs,
+                                                  CommandResultCallback callback, void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pConfig || !callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->set_batch_config_async(sensorId, *pConfig, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_GetBatchConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                  BatchConfig* pConfig, uint32_t timeoutMs,
+                                                  CommandResultCallback callback, void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pConfig || !callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->get_batch_config_async(sensorId, pConfig, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_StartBatchAsync(CameraHandle handle, uint16_t sensorId, uint32_t batchId,
+                                              uint32_t timeoutMs, CommandResultCallback callback,
+                                              void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->start_batch_async(sensorId, batchId, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t sensorId,
+                                             uint32_t timeoutMs, CommandResultCallback callback,
+                                             void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->stop_batch_async(sensorId, timeoutMs, callback, pUserData);
+}
+
+CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs, CommandResultCallback callback,
+                                               void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->reset_buffer_async(sensorId, timeoutMs, callback, pUserData);
 }

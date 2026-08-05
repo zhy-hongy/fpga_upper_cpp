@@ -8,6 +8,8 @@
 #include "sdk/include/photon_camera.h"
 #include "communication/protocol_handler.h"
 
+class CommandManager;
+
 // ProtocolAdapter 是宿主 ProtocolHandler 的适配层（借用指针，不拥有）。
 //
 // 职责（只做转发，不是网络层）：
@@ -39,6 +41,34 @@ public:
     CamError stop_batch(uint16_t sensorId);
     CamError reset_buffer(uint16_t sensorId);
 
+    // ---- 异步非阻塞控制 API 转发 ----
+    // 立即返回 CAM_PENDING；ACK / 超时后经 CommandResultCallback 在 CommandManager
+    // 线程回调。timeoutMs 为超时阈值（ms）。sensorId=0 对 1~4 广播（每个子命令独立 commandId）。
+    void set_command_manager(CommandManager* mgr);
+
+    CamError start_capture_async(uint16_t sensorId, uint32_t timeoutMs,
+                                 CommandResultCallback cb, void* userData);
+    CamError stop_capture_async(uint16_t sensorId, uint32_t timeoutMs,
+                                CommandResultCallback cb, void* userData);
+    CamError set_sensor_config_async(uint16_t sensorId, const SensorConfig& cfg, uint32_t timeoutMs,
+                                     CommandResultCallback cb, void* userData);
+    CamError get_sensor_config_async(uint16_t sensorId, SensorConfig* out, uint32_t timeoutMs,
+                                     CommandResultCallback cb, void* userData);
+    CamError set_trigger_config_async(uint16_t sensorId, const TriggerConfig& cfg, uint32_t timeoutMs,
+                                      CommandResultCallback cb, void* userData);
+    CamError get_trigger_config_async(uint16_t sensorId, TriggerConfig* out, uint32_t timeoutMs,
+                                      CommandResultCallback cb, void* userData);
+    CamError set_batch_config_async(uint16_t sensorId, const BatchConfig& cfg, uint32_t timeoutMs,
+                                    CommandResultCallback cb, void* userData);
+    CamError get_batch_config_async(uint16_t sensorId, BatchConfig* out, uint32_t timeoutMs,
+                                    CommandResultCallback cb, void* userData);
+    CamError start_batch_async(uint16_t sensorId, uint32_t batchId, uint32_t timeoutMs,
+                               CommandResultCallback cb, void* userData);
+    CamError stop_batch_async(uint16_t sensorId, uint32_t timeoutMs,
+                              CommandResultCallback cb, void* userData);
+    CamError reset_buffer_async(uint16_t sensorId, uint32_t timeoutMs,
+                                CommandResultCallback cb, void* userData);
+
 private:
     // ACK 回调类型（与 ProtocolHandler 方法回调签名一致）
     using AckCb = std::function<void(const ControlFrame&)>;
@@ -50,7 +80,14 @@ private:
     CamError invoke_and_wait(const DispatchFn& dispatch, QByteArray* outData = nullptr,
                              int timeoutMs = 4000);
 
+    // 通用异步：注册 commandId 到 CommandManager，再把 dispatch 投递到宿主主线程执行。
+    // 立即返回 CAM_PENDING；dispatch 内应调用 ProtocolHandler 方法并传 ACK 回调，
+    // ACK 回调内调用 m_cmdMgr->ack(id) 触发 CAM_OK，超时由 CommandManager 触发 CAM_ERR_TIMEOUT。
+    CamError post_async(const std::function<void(uint16_t commandId)>& dispatch,
+                        CommandResultCallback cb, void* userData, uint32_t timeoutMs);
+
     ProtocolHandler* m_protocol;  // borrowed, never owned
+    CommandManager* m_cmdMgr = nullptr;  // borrowed, owned by CameraDevice
 };
 
 #endif // PROTOCOL_ADAPTER_H

@@ -19,6 +19,7 @@ set(SDK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/camera_device.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/data_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/callback_worker.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/command_manager.cpp
 )
 
 add_library(PhotonCameraSDK SHARED ${SDK_COMMON_SOURCES} ${SDK_SOURCES})

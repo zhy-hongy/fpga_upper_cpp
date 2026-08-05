@@ -5,6 +5,8 @@
 #include <QByteArray>
 #include <QElapsedTimer>
 
+#include "protocol/transport_frame.h"
+#include "protocol/control_frame.h"
 #include "sdk_test/mock/mock_protocol_handler.h"
 
 SDKTest::SDKTest(ProtocolHandler* protocol, const Config& config,
@@ -32,6 +34,66 @@ void SDKTest::request_stop() {
 
 void SDKTest::log_line(const QString& line) {
     emit log(line);
+}
+
+QByteArray SDKTest::be16v(uint16_t v) {
+    QByteArray d(2, '\0');
+    d[0] = static_cast<char>((v >> 8) & 0xFF);
+    d[1] = static_cast<char>(v & 0xFF);
+    return d;
+}
+
+QByteArray SDKTest::be32v(uint32_t v) {
+    QByteArray d(4, '\0');
+    d[0] = static_cast<char>((v >> 24) & 0xFF);
+    d[1] = static_cast<char>((v >> 16) & 0xFF);
+    d[2] = static_cast<char>((v >> 8) & 0xFF);
+    d[3] = static_cast<char>(v & 0xFF);
+    return d;
+}
+
+void SDKTest::verify_sent_cmds(const QString& apiName,
+                               const QVector<MockSentCmd>& expected) {
+    if (!m_mock) return;
+    const QVector<MockSentCmd> sent = m_mock->take_sent_commands();
+    const bool countOk = (sent.size() == expected.size());
+    log_line(QString("  [验证] %1 → 应发送 %2 条协议命令，实际捕获 %3 条：%4")
+                 .arg(apiName).arg(expected.size()).arg(sent.size())
+                 .arg(countOk ? "是" : "否！"));
+    if (!countOk) return;
+
+    bool allOk = true;
+    for (int i = 0; i < sent.size(); ++i) {
+        const MockSentCmd& s = sent[i];
+        const MockSentCmd& e = expected[i];
+        const bool same = (s.cmd_code == e.cmd_code) &&
+                          (s.device_type == e.device_type) &&
+                          (s.rw == e.rw) && (s.data == e.data);
+
+        // 解包完整传输帧：unpack_transport_frame 会校验帧头/帧尾/外层 CRC16；
+        // 再解包内层 aa55 帧，确认 cmd/dev/rw 与记录一致。
+        bool parseOk = false;
+        try {
+            const TransportFrame tf = unpack_transport_frame(s.transport_frame);
+            const ControlFrame cf = unpack_cmd_frame(tf.data);
+            parseOk = (cf.cmd_code == s.cmd_code) &&
+                      (cf.device_type == s.device_type) && (cf.rw == s.rw);
+        } catch (...) { parseOk = false; }
+
+        log_line(QString("    #%1 cmd=0x%2 dev=0x%3 rw=%4 data=%5 帧=%6B 外层CRC/解析:%7 → %8")
+                     .arg(i + 1)
+                     .arg(s.cmd_code, 4, 16, QChar('0'))
+                     .arg(s.device_type, 4, 16, QChar('0'))
+                     .arg(s.rw == RW_WRITE ? "WRITE"
+                          : (s.rw == RW_READ ? "READ" : "?"))
+                     .arg(QString(s.data.toHex()))
+                     .arg(s.transport_frame.size())
+                     .arg(parseOk ? "通过" : "失败")
+                     .arg(same ? "匹配" : "不匹配！"));
+        if (!same || !parseOk) allOk = false;
+    }
+    log_line(QString("  [验证] %1 协议命令: %2").arg(apiName)
+                 .arg(allOk ? "全部正确" : "存在错误！"));
 }
 
 void CAM_CALL SDKTest::on_data(const FrameInfo* info, const void* data, void* user) {
@@ -62,6 +124,22 @@ void SDKTest::on_frame_received(const FrameInfo* info) {
     }
 }
 
+void CAM_CALL SDKTest::on_async_result(CamError result, uint16_t commandId, void* userData) {
+    auto* r = static_cast<AsyncResult*>(userData);
+    QMutexLocker lock(&r->mutex);
+    r->result = result;
+    r->commandId = commandId;
+    r->callbackThreadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
+    r->done = true;
+    r->cv.wakeAll();
+}
+
+bool SDKTest::wait_async_result(AsyncResult& r, int timeoutMs) {
+    QMutexLocker lock(&r.mutex);
+    if (r.done) return true;
+    return r.cv.wait(&r.mutex, static_cast<unsigned long>(timeoutMs));
+}
+
 void SDKTest::run() {
     m_test_thread_id = reinterpret_cast<quintptr>(QThread::currentThreadId());
     m_frame_count.store(0);
@@ -83,6 +161,12 @@ void SDKTest::run() {
                      .arg(ms >= 100 ? "<-- 超阈值(≥100ms)" : ""));
         return e;
     };
+
+    // 期望"已发送"协议命令序列辅助（仅 Mock 模式校验用）
+    using Sent = MockSentCmd;
+    const int dev1 = DEV_SENSOR1;
+    auto wr = [dev1](int cmd, const QByteArray& d) { return Sent{cmd, dev1, RW_WRITE, d, {}}; };
+    auto rd = [dev1](int cmd) { return Sent{cmd, dev1, RW_READ, QByteArray(2, '\0'), {}}; };
 
     // 1) SDK 初始化
     CamError e = api("Cam_Initialize", [] { return Cam_Initialize(); });
@@ -152,6 +236,11 @@ void SDKTest::run() {
             log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
         }
     }
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_GetSensorConfig",
+                         {rd(CMD_EXPOSURE_TIME), rd(CMD_GAIN),
+                          rd(CMD_EXPOSURE_DELAY), rd(CMD_SAMPLE_RATE)});
+    }
     TriggerConfig tc{};
     e = api("Cam_GetTriggerConfig", [&] { return Cam_GetTriggerConfig(handle, 1, &tc); });
     if (e == CAM_OK) {
@@ -167,6 +256,12 @@ void SDKTest::run() {
             log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
         }
     }
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_GetTriggerConfig",
+                         {rd(CMD_TRIGGER_MODE), rd(CMD_ENCODER_TYPE),
+                          rd(CMD_ENCODER_MODE), rd(CMD_ENCODER_INTERVAL),
+                          rd(CMD_EXTERNAL_TRIGGER)});
+    }
     BatchConfig bc{};
     e = api("Cam_GetBatchConfig", [&] { return Cam_GetBatchConfig(handle, 1, &bc); });
     if (e == CAM_OK) {
@@ -176,22 +271,46 @@ void SDKTest::run() {
             log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
         }
     }
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_GetBatchConfig", {rd(CMD_BATCH_LENGTH)});
+    }
 
     // 8) Set 配置：写命令立即 ACK 成功（roi/pixelPitch/z 等无协议字段必须保持 0）
     log_line("── Set 配置（写命令应立即 ACK 成功，<100ms）──");
     SensorConfig setSc{};
     setSc.exposureTime = 2000; setSc.gain = 3; setSc.exposureDelay = 100; setSc.sampleRate = 3000;
     e = api("Cam_SetSensorConfig", [&] { return Cam_SetSensorConfig(handle, 1, &setSc); });
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_SetSensorConfig",
+                         {wr(CMD_EXPOSURE_TIME, be32v(2000)),
+                          wr(CMD_GAIN, be32v(3)),
+                          wr(CMD_EXPOSURE_DELAY, be32v(100)),
+                          wr(CMD_SAMPLE_RATE, be32v(3000))});
+    }
     TriggerConfig setTc{};
     setTc.triggerMode = 1; setTc.encoderType = 1; setTc.encoderInputMode = 1;
     setTc.encoderStep = 100; setTc.externalEnable = 0;
     e = api("Cam_SetTriggerConfig", [&] { return Cam_SetTriggerConfig(handle, 1, &setTc); });
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_SetTriggerConfig",
+                         {wr(CMD_TRIGGER_MODE, be16v(1)),
+                          wr(CMD_ENCODER_TYPE, be16v(1)),
+                          wr(CMD_ENCODER_MODE, be16v(1)),
+                          wr(CMD_ENCODER_INTERVAL, be32v(100)),
+                          wr(CMD_EXTERNAL_TRIGGER, QByteArray(2, '\0'))});
+    }
     BatchConfig setBc{};
     setBc.length = 200;
     e = api("Cam_SetBatchConfig", [&] { return Cam_SetBatchConfig(handle, 1, &setBc); });
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_SetBatchConfig", {wr(CMD_BATCH_LENGTH, be16v(200))});
+    }
 
     // 9) 开始采集：Mock 覆盖立即 ACK + 启动 40ms 帧生成
     e = api("Cam_StartCapture(1)", [&] { return Cam_StartCapture(handle, 1); });
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_StartCapture(1)", {wr(CMD_START_STOP, QByteArray(2, '\0'))});
+    }
     if (e == CAM_OK) {
         // 10) 收集 DataHandler 回调约 2 秒
         log_line("采集已启动，等待 DataHandler 回调 2 秒...");
@@ -227,8 +346,101 @@ void SDKTest::run() {
 
     // 12) 停止采集：Mock 覆盖立即 ACK + 停止帧生成
     e = api("Cam_StopCapture(1)", [&] { return Cam_StopCapture(handle, 1); });
+    if (m_mock_mode && m_mock) {
+        verify_sent_cmds("Cam_StopCapture(1)", {wr(CMD_START_STOP, QByteArray(2, '\0'))});
+    }
     if (m_mock_mode) {
         log_line(QString("[MOCK] Mock 本次共生成 %1 帧").arg(m_mock->generated_frames()));
+    }
+
+    // ── 异步非阻塞 API 验证（仅 Mock 模式：ACK / 无ACK超时 / 线程分离 / 立即返回）──
+    if (m_mock_mode && m_mock) {
+        const quintptr asyncCallerThread = reinterpret_cast<quintptr>(QThread::currentThreadId());
+        log_line("── 异步非阻塞 API（立即返回 CAM_PENDING，结果经 SDK CommandManager 线程回调）──");
+
+        // 13.1 正常 ACK：StartCaptureAsync 立即返回（<10ms），ACK 回调 CAM_OK
+        {
+            AsyncResult r;
+            e = api("Cam_StartCaptureAsync(1)", [&] {
+                return Cam_StartCaptureAsync(handle, 1, 4000, &SDKTest::on_async_result, &r);
+            });
+            const bool waited = wait_async_result(r, 3000);
+            const bool threadOk = (r.callbackThreadId != asyncCallerThread);
+            log_line(QString("  [异步ACK] command=START_CAPTURE result=%1 commandId=%2 waited=%3（回调线程0x%4 ≠ 调用线程0x%5: %6）")
+                         .arg(int(r.result)).arg(r.commandId)
+                         .arg(waited ? "是" : "否！")
+                         .arg(r.callbackThreadId, 0, 16)
+                         .arg(asyncCallerThread, 0, 16)
+                         .arg(threadOk ? "是" : "否！"));
+            log_line(QString("  [验证] StartCaptureAsync ACK 路径: %1")
+                         .arg((waited && r.result == CAM_OK && threadOk) ? "通过" : "失败！"));
+
+            AsyncResult rStop;
+            e = api("Cam_StopCaptureAsync(1)", [&] {
+                return Cam_StopCaptureAsync(handle, 1, 4000, &SDKTest::on_async_result, &rStop);
+            });
+            const bool waitedStop = wait_async_result(rStop, 3000);
+            log_line(QString("  [异步ACK] command=STOP_CAPTURE result=%1 commandId=%2 waited=%3")
+                         .arg(int(rStop.result)).arg(rStop.commandId)
+                         .arg(waitedStop ? "是" : "否！"));
+            log_line(QString("  [验证] StopCaptureAsync ACK 路径: %1")
+                         .arg((waitedStop && rStop.result == CAM_OK) ? "通过" : "失败！"));
+        }
+
+        // 13.2 无 ACK 超时：Mock 静默模式（不回调 ACK）→ CAM_ERR_TIMEOUT，耗时≈timeoutMs
+        {
+            m_mock->set_silent_acks(true);   // 模拟 FPGA 不回 ACK
+            AsyncResult r;
+            QElapsedTimer t;
+            t.start();
+            e = api("Cam_StartCaptureAsync(1,无ACK)", [&] {
+                return Cam_StartCaptureAsync(handle, 1, 4000, &SDKTest::on_async_result, &r);
+            });
+            const qint64 callCost = t.elapsed();
+            const bool waited = wait_async_result(r, 6000);
+            const qint64 waitCost = t.elapsed();
+            m_mock->set_silent_acks(false);  // 恢复 ACK（静默期间 start_mock_frames 已启动，需停止）
+            const bool threadOk = (r.callbackThreadId != asyncCallerThread);
+            log_line(QString("  [异步超时] command=START_CAPTURE result=%1 commandId=%2 timeout=4000ms 立即返回=%3 ms 等待回调=%4 ms waited=%5（回调线程0x%6 ≠ 调用线程0x%7: %8）")
+                         .arg(int(r.result)).arg(r.commandId)
+                         .arg(callCost).arg(waitCost)
+                         .arg(waited ? "是" : "否！")
+                         .arg(r.callbackThreadId, 0, 16)
+                         .arg(asyncCallerThread, 0, 16)
+                         .arg(threadOk ? "是" : "否！"));
+            log_line(QString("  [验证] StartCaptureAsync 超时路径: %1")
+                         .arg((waited && r.result == CAM_ERR_TIMEOUT && threadOk) ? "通过" : "失败！"));
+
+            AsyncResult rStop;
+            e = api("Cam_StopCaptureAsync(1)", [&] {
+                return Cam_StopCaptureAsync(handle, 1, 4000, &SDKTest::on_async_result, &rStop);
+            });
+            const bool waitedStop = wait_async_result(rStop, 3000);
+            log_line(QString("  [异步ACK] command=STOP_CAPTURE result=%1 commandId=%2 waited=%3")
+                         .arg(int(rStop.result)).arg(rStop.commandId)
+                         .arg(waitedStop ? "是" : "否！"));
+        }
+
+        // 13.3 异步 Get 配置：4 条读命令全部 ACK 后回调，输出结构被填充
+        {
+            SensorConfig asc{};
+            AsyncResult r;
+            e = api("Cam_GetSensorConfigAsync(1)", [&] {
+                return Cam_GetSensorConfigAsync(handle, 1, &asc, 4000, &SDKTest::on_async_result, &r);
+            });
+            const bool waited = wait_async_result(r, 3000);
+            const bool dataOk = (asc.exposureTime == uint32_t(m_mock->default_exposure()) &&
+                                 asc.gain == uint32_t(m_mock->default_gain()) &&
+                                 asc.exposureDelay == uint32_t(m_mock->default_exposure_delay()) &&
+                                 asc.sampleRate == uint32_t(m_mock->default_sample_rate()));
+            log_line(QString("  [异步Get] command=GET_SENSOR_CONFIG result=%1 commandId=%2 exposure=%3 gain=%4 expDelay=%5 sampleRate=%6 waited=%7（数据与 Mock 默认一致: %8）")
+                         .arg(int(r.result)).arg(r.commandId)
+                         .arg(asc.exposureTime).arg(asc.gain).arg(asc.exposureDelay).arg(asc.sampleRate)
+                         .arg(waited ? "是" : "否！")
+                         .arg(dataOk ? "是" : "否！"));
+            log_line(QString("  [验证] GetSensorConfigAsync 路径: %1")
+                         .arg((waited && r.result == CAM_OK && dataOk) ? "通过" : "失败！"));
+        }
     }
 
     // 13) 收尾

@@ -2,11 +2,16 @@
 #define SDK_TEST_H
 
 #include <atomic>
+#include <cstdint>
 
+#include <QMutex>
 #include <QThread>
+#include <QVector>
+#include <QWaitCondition>
 
 #include "photon_camera.h"
 #include "utils/config.h"
+#include "sdk_test/mock/mock_protocol_handler.h"
 
 class ProtocolHandler;
 class MockProtocolHandler;
@@ -60,6 +65,27 @@ private:
     static void CAM_CALL on_data(const FrameInfo* info, const void* data, void* user);
     void on_frame_received(const FrameInfo* info);
     void log_line(const QString& line);
+
+    // ── 异步非阻塞 API 测试辅助 ──
+    struct AsyncResult {
+        QMutex mutex;
+        QWaitCondition cv;
+        bool done = false;              // 回调已触发
+        CamError result = CAM_ERR_UNKNOWN;
+        uint16_t commandId = 0;
+        quintptr callbackThreadId = 0;  // 回调执行线程（应为 CommandManager 线程）
+    };
+    static void CAM_CALL on_async_result(CamError result, uint16_t commandId, void* userData);
+    bool wait_async_result(AsyncResult& r, int timeoutMs);   // 返回 true 表示已收到回调
+
+    // 校验 Mock 记录的"已发送"协议命令与期望序列一致（仅 Mock 模式）。
+    // 同时解包每个传输帧，验证外层 CRC16 与内层 aa55 结构有效。
+    void verify_sent_cmds(const QString& apiName,
+                          const QVector<MockSentCmd>& expected);
+
+    // 构造期望 payload 的辅助（与 ProtocolHandler::pack_cmd_frame 编码一致）
+    static QByteArray be16v(uint16_t v);
+    static QByteArray be32v(uint32_t v);
 
     ProtocolHandler* m_protocol;      // borrowed，宿主生命周期，SDK 不负责（真实模式）
     Config m_config;                  // 用于构造 MockProtocolHandler 基类

@@ -249,15 +249,24 @@ bool ProtocolHandler::send_transport(const QByteArray& frame) {
     return true;
 }
 
+QByteArray ProtocolHandler::build_command_frame(int cmd_code, int rw,
+                                                const QByteArray& data,
+                                                int sensor_id,
+                                                int* out_msg_id) {
+    const int device_type = (sensor_id >= 0) ? sensor_id : m_sensor_id;
+    const int msg_id = next_msg_id();
+    if (out_msg_id) *out_msg_id = msg_id;
+    return pack_cmd_frame(device_type, cmd_code, msg_id,
+                          MSG_TYPE_COMMAND, rw, data);
+}
+
 int ProtocolHandler::send_cmd(int cmd_code, int rw, const QByteArray& data,
                                int sensor_id,
                                std::function<void(const ControlFrame&)> callback,
                                std::function<void()> error_callback) {
     int device_type = (sensor_id >= 0) ? sensor_id : m_sensor_id;
-    int msg_id = next_msg_id();
-
-    QByteArray frame = pack_cmd_frame(device_type, cmd_code, msg_id,
-                                       MSG_TYPE_COMMAND, rw, data);
+    int msg_id = 0;
+    QByteArray frame = build_command_frame(cmd_code, rw, data, sensor_id, &msg_id);
 
     if (!send_transport(frame)) {
         if (error_callback) {

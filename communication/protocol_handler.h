@@ -79,6 +79,15 @@ public:
     void read_fpga_version(std::function<void(const ControlFrame&)> callback = nullptr,
                            std::function<void()> error_callback = nullptr);
 
+protected:
+    // 打包一条控制命令帧（aa55 协议帧，含内层 CRC），不发送、不登记 pending。
+    // 与 send_cmd 的打包逻辑完全一致（相同 device_type / msg_id / 内层 CRC）。
+    // 生成的 msg_id 通过 out_msg_id 返回（可空）。
+    // 供 MockProtocolHandler 在验证"调用后是否发送了对应协议命令"时复用同一打包路径。
+    QByteArray build_command_frame(int cmd_code, int rw, const QByteArray& data,
+                                   int sensor_id, int* out_msg_id = nullptr);
+
+public:
     // Firmware upgrade
     void send_remote_update_request(const QString& file_path,
                                      std::function<void(const ControlFrame&)> callback = nullptr,

@@ -1,9 +1,13 @@
 #include "protocol_adapter.h"
 
+#include "sdk/src/command_manager.h"
+
 #include <QMetaObject>
 #include <QThread>
+#include <atomic>
 #include <chrono>
 #include <future>
+#include <memory>
 
 namespace {
 
@@ -302,3 +306,211 @@ CamError ProtocolAdapter::reset_buffer(uint16_t sensorId) {
         m_protocol->reset_buffer(sensorId, cb);
     });
 }
+
+// =========================================================================
+// 异步非阻塞控制 API 转发（立即返回 CAM_PENDING）
+// =========================================================================
+
+void ProtocolAdapter::set_command_manager(CommandManager* mgr) {
+    m_cmdMgr = mgr;
+}
+
+CamError ProtocolAdapter::post_async(const std::function<void(uint16_t)>& dispatch,
+                                     CommandResultCallback cb, void* userData,
+                                     uint32_t timeoutMs) {
+    if (!m_protocol) return CAM_ERR_NOT_INITIALIZED;
+    if (!m_cmdMgr) return CAM_ERR_NOT_INITIALIZED;
+    if (!cb) return CAM_ERR_INVALID_PARAM;
+
+    // 1) 先注册 commandId（保存 callback），再投递到宿主主线程发送命令。
+    const uint16_t id = m_cmdMgr->submit(cb, userData, static_cast<int>(timeoutMs));
+
+    // 2) 投递 dispatch 到 ProtocolHandler 所在线程（不等待 ACK）。
+    bool posted = QMetaObject::invokeMethod(
+        m_protocol, [dispatch, id]() { dispatch(id); }, Qt::QueuedConnection);
+
+    if (!posted) {
+        m_cmdMgr->fail(id, CAM_ERR_UNKNOWN);
+        return CAM_ERR_UNKNOWN;
+    }
+    return CAM_PENDING;
+}
+
+CamError ProtocolAdapter::start_capture_async(uint16_t sensorId, uint32_t timeoutMs,
+                                              CommandResultCallback cb, void* userData) {
+    if (sensorId == 0) {
+        CamError result = CAM_PENDING;
+        for (int sid = 1; sid <= 4; ++sid) {
+            CamError e = start_capture_async(static_cast<uint16_t>(sid), timeoutMs, cb, userData);
+            if (e != CAM_PENDING) result = e;
+        }
+        return result;
+    }
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId](uint16_t id) {
+        m_protocol->start_capture(sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::stop_capture_async(uint16_t sensorId, uint32_t timeoutMs,
+                                             CommandResultCallback cb, void* userData) {
+    if (sensorId == 0) {
+        CamError result = CAM_PENDING;
+        for (int sid = 1; sid <= 4; ++sid) {
+            CamError e = stop_capture_async(static_cast<uint16_t>(sid), timeoutMs, cb, userData);
+            if (e != CAM_PENDING) result = e;
+        }
+        return result;
+    }
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId](uint16_t id) {
+        m_protocol->stop_capture(sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::set_sensor_config_async(uint16_t sensorId, const SensorConfig& cfg,
+                                                  uint32_t timeoutMs,
+                                                  CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    if (cfg.roiStart != 0 || cfg.roiWidth != 0 || cfg.pixelPitch != 0.0f ||
+        cfg.zMin != 0 || cfg.zMax != 0) {
+        return CAM_ERR_NOT_SUPPORTED;
+    }
+    return post_async([this, sensorId, v = cfg.exposureTime, g = cfg.gain,
+                       d = cfg.exposureDelay, s = cfg.sampleRate](uint16_t id) {
+        auto state = std::make_shared<std::atomic<int>>(4);
+        auto done = [this, id, state]() {
+            if (state->fetch_sub(1) == 1) m_cmdMgr->ack(id);
+        };
+        m_protocol->set_exposure(static_cast<int>(v), sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_gain(static_cast<int>(g), sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_exposure_delay(static_cast<int>(d), sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_sample_rate(static_cast<int>(s), sensorId, [done](const ControlFrame&) { done(); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::get_sensor_config_async(uint16_t sensorId, SensorConfig* out,
+                                                  uint32_t timeoutMs,
+                                                  CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    if (!out) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId, out](uint16_t id) {
+        auto state = std::make_shared<std::atomic<int>>(4);
+        auto done = [this, id, state]() {
+            if (state->fetch_sub(1) == 1) m_cmdMgr->ack(id);
+        };
+        m_protocol->read_exposure(sensorId, [out, done](const ControlFrame& f) { out->exposureTime = be32(f.data); done(); });
+        m_protocol->read_gain(sensorId, [out, done](const ControlFrame& f) { out->gain = be32(f.data); done(); });
+        m_protocol->read_exposure_delay(sensorId, [out, done](const ControlFrame& f) { out->exposureDelay = be32(f.data); done(); });
+        m_protocol->read_sample_rate(sensorId, [out, done](const ControlFrame& f) { out->sampleRate = be32(f.data); done(); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::set_trigger_config_async(uint16_t sensorId, const TriggerConfig& cfg,
+                                                   uint32_t timeoutMs,
+                                                   CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId, tm = cfg.triggerMode, et = cfg.encoderType,
+                       em = cfg.encoderInputMode, es = cfg.encoderStep,
+                       ee = cfg.externalEnable](uint16_t id) {
+        auto state = std::make_shared<std::atomic<int>>(5);
+        auto done = [this, id, state]() {
+            if (state->fetch_sub(1) == 1) m_cmdMgr->ack(id);
+        };
+        m_protocol->set_trigger_mode(tm, sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_encoder_type(et, sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_encoder_mode(em, sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_encoder_interval(static_cast<int>(es), sensorId, [done](const ControlFrame&) { done(); });
+        m_protocol->set_external_trigger(ee != 0, sensorId, [done](const ControlFrame&) { done(); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::get_trigger_config_async(uint16_t sensorId, TriggerConfig* out,
+                                                   uint32_t timeoutMs,
+                                                   CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    if (!out) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId, out](uint16_t id) {
+        auto state = std::make_shared<std::atomic<int>>(5);
+        auto done = [this, id, state]() {
+            if (state->fetch_sub(1) == 1) m_cmdMgr->ack(id);
+        };
+        m_protocol->read_trigger_mode(sensorId, [out, done](const ControlFrame& f) { out->triggerMode = be16(f.data); done(); });
+        m_protocol->read_encoder_type(sensorId, [out, done](const ControlFrame& f) { out->encoderType = be16(f.data); done(); });
+        m_protocol->read_encoder_mode(sensorId, [out, done](const ControlFrame& f) { out->encoderInputMode = be16(f.data); done(); });
+        m_protocol->read_encoder_interval(sensorId, [out, done](const ControlFrame& f) { out->encoderStep = be32(f.data); done(); });
+        m_protocol->read_external_trigger(sensorId, [out, done](const ControlFrame& f) { out->externalEnable = be16(f.data); done(); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::set_batch_config_async(uint16_t sensorId, const BatchConfig& cfg,
+                                                 uint32_t timeoutMs,
+                                                 CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId, v = cfg.length](uint16_t id) {
+        m_protocol->set_batch_length(v, sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::get_batch_config_async(uint16_t sensorId, BatchConfig* out,
+                                                 uint32_t timeoutMs,
+                                                 CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    if (!out) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId, out](uint16_t id) {
+        m_protocol->read_batch_length(sensorId, [out, this, id](const ControlFrame& f) {
+            out->length = be16(f.data);
+            m_cmdMgr->ack(id);
+        });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::start_batch_async(uint16_t sensorId, uint32_t /*batchId*/,
+                                            uint32_t timeoutMs,
+                                            CommandResultCallback cb, void* userData) {
+    if (sensorId == 0) {
+        CamError result = CAM_PENDING;
+        for (int sid = 1; sid <= 4; ++sid) {
+            CamError e = start_batch_async(static_cast<uint16_t>(sid), 0, timeoutMs, cb, userData);
+            if (e != CAM_PENDING) result = e;
+        }
+        return result;
+    }
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId](uint16_t id) {
+        m_protocol->set_batch_control(true, sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::stop_batch_async(uint16_t sensorId, uint32_t timeoutMs,
+                                           CommandResultCallback cb, void* userData) {
+    if (sensorId == 0) {
+        CamError result = CAM_PENDING;
+        for (int sid = 1; sid <= 4; ++sid) {
+            CamError e = stop_batch_async(static_cast<uint16_t>(sid), timeoutMs, cb, userData);
+            if (e != CAM_PENDING) result = e;
+        }
+        return result;
+    }
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId](uint16_t id) {
+        m_protocol->set_batch_control(false, sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::reset_buffer_async(uint16_t sensorId, uint32_t timeoutMs,
+                                             CommandResultCallback cb, void* userData) {
+    if (sensorId == 0) {
+        CamError result = CAM_PENDING;
+        for (int sid = 1; sid <= 4; ++sid) {
+            CamError e = reset_buffer_async(static_cast<uint16_t>(sid), timeoutMs, cb, userData);
+            if (e != CAM_PENDING) result = e;
+        }
+        return result;
+    }
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId](uint16_t id) {
+        m_protocol->reset_buffer(sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
