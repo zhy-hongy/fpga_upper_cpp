@@ -1,14 +1,14 @@
 // sdk_standalone_test/main.cpp
 //
-// ¶ÀÁ¢ SDK Ä£Ê½ÑéÖ¤³ÌĞò£ºÖ»Ê¹ÓÃ PhotonCameraSDK.dll µÄ¹«¿ª C API£¨photon_camera.h£©£¬
-// ²» include ÈÎºÎ SDK ÄÚ²¿Í·ÎÄ¼ş¡¢²»µ÷ÓÃ Cam_AttachProtocolHandler£¨ÎŞËŞÖ÷×¢Èë£©¡£
-// ´¿ C++17£¬²»Á´½Ó Qt£¨Qt ÔËĞĞÊ±ÓÉ DLL ÄÚ²¿×Ô´ø£©¡£
+// ç‹¬ç«‹ SDK æ¨¡å¼éªŒè¯ç¨‹åºï¼šåªä½¿ç”¨ PhotonCameraSDK.dll çš„å…¬å¼€ C APIï¼ˆphoton_camera.hï¼‰ï¼Œ
+// ä¸ include ä»»ä½• SDK å†…éƒ¨å¤´æ–‡ä»¶ã€ä¸è°ƒç”¨ Cam_AttachProtocolHandlerï¼ˆæ— å®¿ä¸»æ³¨å…¥ï¼‰ã€‚
+// çº¯ C++17ï¼Œä¸é“¾æ¥ Qtï¼ˆQt è¿è¡Œæ—¶ç”± DLL å†…éƒ¨è‡ªå¸¦ï¼‰ã€‚
 //
-// ÓÃ·¨:
-//   sdk_standalone_test --mock                         # DLL ÄÚÖÃ Mock Éè±¸£¬ÎŞÍøÂç
-//   sdk_standalone_test --udp                          # ²âÊÔ UDP Í¨Ñ¶£¨ĞèÏÈÆô¶¯ udp_simulator.py£©
-//   sdk_standalone_test --udp 127.0.0.1 5000 60000     # ×Ô¶¨Òå IP ºÍ¶Ë¿Ú
-//   sdk_standalone_test [ip] [ctrlPort] [dataPort]     # ÕæÊµ FPGA
+// ç”¨æ³•:
+//   sdk_standalone_test --mock                         # DLL å†…ç½® Mock è®¾å¤‡ï¼Œæ— ç½‘ç»œ
+//   sdk_standalone_test --udp                          # æµ‹è¯• UDP é€šè®¯ï¼ˆéœ€å…ˆå¯åŠ¨ udp_simulator.pyï¼‰
+//   sdk_standalone_test --udp 127.0.0.1 5000 60000     # è‡ªå®šä¹‰ IP å’Œç«¯å£
+//   sdk_standalone_test [ip] [ctrlPort] [dataPort]     # çœŸå® FPGA
 
 #include <atomic>
 #include <chrono>
@@ -23,7 +23,7 @@
 
 #include "photon_camera.h"
 
-// ©¤©¤ Êı¾İ»Øµ÷ÉÏÏÂÎÄ ©¤©¤
+// â”€â”€ æ•°æ®å›è°ƒä¸Šä¸‹æ–‡ â”€â”€
 static std::atomic<int> g_frameCount{0};
 static std::mutex g_frameMutex;
 static FrameInfo g_lastFrame{};
@@ -35,7 +35,7 @@ static void CAM_CALL on_data(const FrameInfo* info, const void* /*pData*/, void*
     g_frameCount.fetch_add(1);
 }
 
-// ©¤©¤ Òì²½ ACK »Øµ÷ÉÏÏÂÎÄ ©¤©¤
+// â”€â”€ å¼‚æ­¥ ACK å›è°ƒä¸Šä¸‹æ–‡ â”€â”€
 struct AsyncResult {
     std::mutex mutex;
     std::condition_variable cv;
@@ -65,37 +65,37 @@ static void check(const char* name, bool ok, const std::string& detail = "") {
     if (!ok) g_failCount++;
 }
 
-// ©¤©¤ UDP Ä£Ê½£º²âÊÔËùÓĞ SDK API ©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤
+// â”€â”€ UDP æ¨¡å¼ï¼šæµ‹è¯•æ‰€æœ‰ SDK API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 static void run_udp_tests(CameraHandle h) {
-    std::printf("\n--- UDP Í¨Ñ¶²âÊÔ£ºÍ¬²½ API ---\n\n");
+    std::printf("\n--- UDP é€šè®¯æµ‹è¯•ï¼šåŒæ­¥ API ---\n\n");
 
-    // µÈ´ı SDK ÄÚ²¿ÊÂ¼şÑ­»·ÍêÈ«¾ÍĞ÷£¨µÚÒ»¸öÃüÁîÈİÒ×ÒòÊÂ¼şÑ­»·Î´¾ÍĞ÷¶ø³¬Ê±£©
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    // ©¤©¤ »ù´¡ĞÅÏ¢ ©¤©¤
+    // â”€â”€ åŸºç¡€ä¿¡æ¯ â”€â”€
     {
         DeviceRunState state = STATE_IDLE;
-        check("GetRunState", Cam_GetRunState(h, &state) == CAM_OK && state == STATE_READY,
+        CamError rs = Cam_GetRunState(h, &state);
+        check("GetRunState", rs == CAM_OK && state == STATE_READY,
               "state=" + std::to_string(state));
 
         uint32_t sensorCount = 0;
-        check("GetSensorCount", Cam_GetSensorCount(h, &sensorCount) == CAM_OK && sensorCount == 4,
+        CamError cs = Cam_GetSensorCount(h, &sensorCount);
+        check("GetSensorCount", cs == CAM_OK && sensorCount == 4,
               "count=" + std::to_string(sensorCount));
 
         DeviceInformation devInfo{};
-        check("GetDeviceInformation", Cam_GetDeviceInformation(h, &devInfo) == CAM_OK,
+        CamError di = Cam_GetDeviceInformation(h, &devInfo);
+        check("GetDeviceInformation", di == CAM_OK,
               "status=" + std::to_string(devInfo.status));
     }
 
-    // ©¤©¤ Sensor ÅäÖÃ£ºĞ´ºó¶ÁÑéÖ¤ ©¤©¤
+    // â”€â”€ Sensor é…ç½®ï¼šå†™åè¯»éªŒè¯ â”€â”€
     {
         SensorConfig writeCfg{};
         writeCfg.exposureTime  = 5000;
         writeCfg.gain          = 320;
         writeCfg.exposureDelay = 20;
         writeCfg.sampleRate    = 150;
-        // ROI ºÍÎïÀí×Ö¶ÎÖÃÁã£¨²»Ö§³Ö£©
+        // ROI å’Œç‰©ç†å­—æ®µç½®é›¶ï¼ˆä¸æ”¯æŒï¼‰
 
         CamError e = Cam_SetSensorConfig(h, 1, &writeCfg);
         check("SetSensorConfig (sensor=1)", e == CAM_OK,
@@ -114,14 +114,14 @@ static void run_udp_tests(CameraHandle h) {
               "got " + std::to_string(readCfg.sampleRate));
     }
 
-    // ©¤©¤ ´¥·¢ÅäÖÃ£ºĞ´ºó¶ÁÑéÖ¤ ©¤©¤
+    // â”€â”€ è§¦å‘é…ç½®ï¼šå†™åè¯»éªŒè¯ â”€â”€
     {
         TriggerConfig writeCfg{};
-        writeCfg.triggerMode     = 2;     // ±àÂëÆ÷
-        writeCfg.encoderType     = 1;     // ²î·Ö
-        writeCfg.encoderInputMode = 2;    // 2±¶Æµ
+        writeCfg.triggerMode     = 2;     // ç¼–ç å™¨
+        writeCfg.encoderType     = 1;     // å·®åˆ†
+        writeCfg.encoderInputMode = 2;    // 2å€é¢‘
         writeCfg.encoderStep     = 500;
-        writeCfg.externalEnable  = 1;     // ¿ªÆô
+        writeCfg.externalEnable  = 1;     // å¼€å¯
 
         CamError e = Cam_SetTriggerConfig(h, 1, &writeCfg);
         check("SetTriggerConfig (sensor=1)", e == CAM_OK,
@@ -142,7 +142,7 @@ static void run_udp_tests(CameraHandle h) {
               "got " + std::to_string(readCfg.externalEnable));
     }
 
-    // ©¤©¤ Åú´¦ÀíÅäÖÃ£ºĞ´ºó¶ÁÑéÖ¤ ©¤©¤
+    // â”€â”€ æ‰¹å¤„ç†é…ç½®ï¼šå†™åè¯»éªŒè¯ â”€â”€
     {
         BatchConfig writeCfg{};
         writeCfg.length = 32;
@@ -158,7 +158,7 @@ static void run_udp_tests(CameraHandle h) {
               "got " + std::to_string(readCfg.length));
     }
 
-    // ©¤©¤ ²É¼¯¿ØÖÆ ©¤©¤
+    // â”€â”€ é‡‡é›†æ§åˆ¶ â”€â”€
     {
         CamError e = Cam_StartCapture(h, 1);
         check("StartCapture (sensor=1)", e == CAM_OK, "-> " + std::to_string(e));
@@ -166,7 +166,7 @@ static void run_udp_tests(CameraHandle h) {
         e = Cam_StopCapture(h, 1);
         check("StopCapture (sensor=1)", e == CAM_OK, "-> " + std::to_string(e));
 
-        // ¹ã²¥Ä£Ê½ (sensorId=0)
+        // å¹¿æ’­æ¨¡å¼ (sensorId=0)
         e = Cam_StartCapture(h, 0);
         check("StartCapture (broadcast)", e == CAM_OK, "-> " + std::to_string(e));
 
@@ -174,7 +174,7 @@ static void run_udp_tests(CameraHandle h) {
         check("StopCapture (broadcast)", e == CAM_OK, "-> " + std::to_string(e));
     }
 
-    // ©¤©¤ Åú´¦Àí¿ØÖÆ ©¤©¤
+    // â”€â”€ æ‰¹å¤„ç†æ§åˆ¶ â”€â”€
     {
         CamError e = Cam_StartBatch(h, 1, 42);
         check("StartBatch (sensor=1, batchId=42)", e == CAM_OK, "-> " + std::to_string(e));
@@ -183,13 +183,13 @@ static void run_udp_tests(CameraHandle h) {
         check("StopBatch (sensor=1)", e == CAM_OK, "-> " + std::to_string(e));
     }
 
-    // ©¤©¤ ¸´Î»»º³åÇø ©¤©¤
+    // â”€â”€ å¤ä½ç¼“å†²åŒº â”€â”€
     {
         CamError e = Cam_ResetBuffer(h, 1);
         check("ResetBuffer (sensor=1)", e == CAM_OK, "-> " + std::to_string(e));
     }
 
-    // ©¤©¤ ²»Ö§³ÖµÄ¹¦ÄÜ ©¤©¤
+    // â”€â”€ ä¸æ”¯æŒçš„åŠŸèƒ½ â”€â”€
     {
         SensorInformation info{};
         CamError e = Cam_GetSensorInformation(h, 1, &info);
@@ -212,7 +212,7 @@ static void run_udp_tests(CameraHandle h) {
               "-> " + std::to_string(e));
     }
 
-    // ©¤©¤ ²ÎÊıĞ£Ñé ©¤©¤
+    // â”€â”€ å‚æ•°æ ¡éªŒ â”€â”€
     {
         CamError e = Cam_SetSensorConfig(h, 1, nullptr);
         check("SetSensorConfig(null) -> INVALID_PARAM", e == CAM_ERR_INVALID_PARAM,
@@ -227,8 +227,8 @@ static void run_udp_tests(CameraHandle h) {
               "-> " + std::to_string(e));
     }
 
-    // ©¤©¤ Òì²½ API ²âÊÔ ©¤©¤
-    std::printf("\n--- UDP Í¨Ñ¶²âÊÔ£ºÒì²½ API ---\n\n");
+    // â”€â”€ å¼‚æ­¥ API æµ‹è¯• â”€â”€
+    std::printf("\n--- UDP é€šè®¯æµ‹è¯•ï¼šå¼‚æ­¥ API ---\n\n");
 
     {
         AsyncResult ar;
@@ -296,10 +296,10 @@ static void run_udp_tests(CameraHandle h) {
     }
 }
 
-// ©¤©¤ Mock Ä£Ê½²âÊÔ ©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤
+// â”€â”€ Mock æ¨¡å¼æµ‹è¯• â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 static void run_mock_tests(CameraHandle h) {
-    std::printf("\n--- Mock Ä£Ê½²âÊÔ ---\n\n");
+    std::printf("\n--- Mock æ¨¡å¼æµ‹è¯• ---\n\n");
 
     // StartCaptureAsync
     AsyncResult ack;
@@ -315,7 +315,7 @@ static void run_mock_tests(CameraHandle h) {
         check("StartCaptureAsync commandId != 0", ack.commandId != 0);
     }
 
-    // ÊÕÖ¡
+    // æ”¶å¸§
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     {
         std::lock_guard<std::mutex> lock(g_frameMutex);
@@ -332,7 +332,7 @@ static void run_mock_tests(CameraHandle h) {
         check("frame dataSize=1310720", g_lastFrame.dataSize == 1280u * 1024u);
     }
 
-    // Î´ÊµÏÖĞ­Òé ¡ú NOT_SUPPORTED ÇÒ²»·¢ËÍÈÎºÎ UDP ÃüÁî
+    // æœªå®ç°åè®® â†’ NOT_SUPPORTED ä¸”ä¸å‘é€ä»»ä½• UDP å‘½ä»¤
     uint32_t before = 0;
     check("GetMockSentCommandCount(initial)", Cam_GetMockSentCommandCount(h, &before) == CAM_OK);
     std::printf("  mock sent-cmd count before NOT_SUPPORTED call: %u\n", before);
@@ -350,7 +350,7 @@ static void run_mock_tests(CameraHandle h) {
 
     uint32_t after = 0;
     check("GetMockSentCommandCount(after)", Cam_GetMockSentCommandCount(h, &after) == CAM_OK);
-    check("NOT_SUPPORTED Î´·¢ËÍÈÎºÎ UDP ÃüÁî (count ²»±ä)", after == before,
+    check("NOT_SUPPORTED æœªå‘é€ä»»ä½• UDP å‘½ä»¤ (count ä¸å˜)", after == before,
           "before=" + std::to_string(before) + " after=" + std::to_string(after));
 
     // StopCaptureAsync
@@ -365,7 +365,7 @@ static void run_mock_tests(CameraHandle h) {
     }
 }
 
-// ©¤©¤ main ©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤
+// â”€â”€ main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 int main(int argc, char** argv) {
     bool mock = false;
@@ -379,8 +379,8 @@ int main(int argc, char** argv) {
             mock = true;
         } else if (std::strcmp(argv[i], "--udp") == 0) {
             udp = true;
-            ip = "127.0.0.1";  // Ä¬ÈÏ localhost
-            // Èç¹ûºóÃæ¸úÁË ip controlPort dataPort
+            ip = "127.0.0.1";  // é»˜è®¤ localhost
+            // å¦‚æœåé¢è·Ÿäº† ip controlPort dataPort
             if (i + 3 < argc) {
                 ip = argv[i + 1];
                 controlPort = std::atoi(argv[i + 2]);
@@ -399,11 +399,11 @@ int main(int argc, char** argv) {
     std::printf("=== sdk_standalone_test (%s) ip=%s ctrl=%d data=%d ===\n",
                 mode, ip.c_str(), controlPort, dataPort);
 
-    // ©¤©¤ ³õÊ¼»¯ ©¤©¤
+    // â”€â”€ åˆå§‹åŒ– â”€â”€
     check("Initialize", Cam_Initialize() == CAM_OK);
     std::printf("SDK version: %s\n", Cam_GetSdkVersion());
 
-    // ©¤©¤ ´ò¿ªÉè±¸ ©¤©¤
+    // â”€â”€ æ‰“å¼€è®¾å¤‡ â”€â”€
     CameraHandle h = nullptr;
     CamError e;
     if (mock) {
@@ -416,17 +416,17 @@ int main(int argc, char** argv) {
     check("OpenNetworkDevice", e == CAM_OK && h != nullptr,
           "-> err=" + std::to_string(e));
 
-    // ©¤©¤ ×¢²áÊı¾İ»Øµ÷ ©¤©¤
+    // â”€â”€ æ³¨å†Œæ•°æ®å›è°ƒ â”€â”€
     check("RegisterDataHandler", Cam_RegisterDataHandler(h, on_data, nullptr) == CAM_OK);
 
-    // ©¤©¤ °´Ä£Ê½ÔËĞĞ²âÊÔ ©¤©¤
+    // â”€â”€ æŒ‰æ¨¡å¼è¿è¡Œæµ‹è¯• â”€â”€
     if (mock) {
         run_mock_tests(h);
     } else if (udp) {
         run_udp_tests(h);
     } else {
-        // ÕæÊµÄ£Ê½£º¼òµ¥ÑéÖ¤
-        std::printf("\n--- ÕæÊµÄ£Ê½£º»ù±¾ÑéÖ¤ ---\n\n");
+        // çœŸå®æ¨¡å¼ï¼šç®€å•éªŒè¯
+        std::printf("\n--- çœŸå®æ¨¡å¼ï¼šåŸºæœ¬éªŒè¯ ---\n\n");
         AsyncResult ack;
         e = Cam_StartCaptureAsync(h, 1, 4000, on_async, &ack);
         check("StartCaptureAsync returns CAM_PENDING", e == CAM_PENDING);
@@ -441,11 +441,11 @@ int main(int argc, char** argv) {
         wait_async(stop, 6000);
     }
 
-    // ©¤©¤ ÇåÀí ©¤©¤
+    // â”€â”€ æ¸…ç† â”€â”€
     check("CloseDevice", Cam_CloseDevice(h) == CAM_OK);
     check("Finalize", Cam_Finalize() == CAM_OK);
 
-    // ©¤©¤ ½á¹û ©¤©¤
+    // â”€â”€ ç»“æœ â”€â”€
     std::printf("\n=== sdk_standalone_test result: %s (%d failures) ===\n",
                 g_failCount == 0 ? "PASS" : "FAIL", g_failCount);
     return g_failCount == 0 ? 0 : 1;

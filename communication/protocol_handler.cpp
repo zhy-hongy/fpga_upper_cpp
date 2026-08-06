@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QUdpSocket>
 #include <chrono>
+#include <thread>
 
 static double steady_now() {
     return std::chrono::duration<double>(
@@ -45,7 +46,10 @@ int ProtocolHandler::next_msg_id() {
 void ProtocolHandler::setup_connections() {
     connect(m_ctrl, &UDPWorker::sig_cmd_received, this, &ProtocolHandler::on_raw_response);
     connect(m_ctrl, &UDPWorker::sig_retransmit_request, this, &ProtocolHandler::on_retransmit_request);
-    connect(m_ctrl, &UDPWorker::sig_ready, this, [this]() { emit connected(); });
+    connect(m_ctrl, &UDPWorker::sig_ready, this, [this]() {
+        m_ctrl_ready.store(true, std::memory_order_release);
+        emit connected();
+    });
     connect(m_ctrl, &UDPWorker::sig_stopped, this, [this]() { emit disconnected(); });
     connect(m_ctrl, &UDPWorker::sig_error, this, [this](const QString& err) {
         emit error_occurred(err);
@@ -57,6 +61,9 @@ void ProtocolHandler::setup_connections() {
     connect(m_data, &UDPDataThread::sig_frame_ready, this, &ProtocolHandler::frame_ready);
     connect(m_data, &UDPDataThread::sig_error, this, [this](const QString& err) {
         emit error_occurred(err);
+    });
+    connect(m_data, &UDPDataThread::sig_ready, this, [this]() {
+        m_data_ready.store(true, std::memory_order_release);
     });
 }
 
@@ -639,6 +646,8 @@ int ProtocolHandler::last_pkt_id() const {
 // ── Lifecycle ──
 
 void ProtocolHandler::start_all() {
+    m_ctrl_ready.store(false, std::memory_order_release);
+    m_data_ready.store(false, std::memory_order_release);
     m_ctrl->start();
     m_data->start();
     emit status_message(QString("Protocol handler started (ctrl:%1, data:%2)")
@@ -657,6 +666,17 @@ void ProtocolHandler::stop_all() {
     }
 }
 
+void ProtocolHandler::wait_all_ready(int timeoutMs) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (true) {
+        bool ctrl_ok = m_ctrl_ready.load(std::memory_order_acquire);
+        bool data_ok = m_data_ready.load(std::memory_order_acquire);
+        if (ctrl_ok && data_ok) break;
+        if (std::chrono::steady_clock::now() > deadline) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
 void ProtocolHandler::set_network_params(const QString& target_host, int target_port, int local_port) {
     stop_all();
 
@@ -665,6 +685,9 @@ void ProtocolHandler::set_network_params(const QString& target_host, int target_
 
     delete m_ctrl;
     delete m_data;
+
+    m_ctrl_ready.store(false, std::memory_order_release);
+    m_data_ready.store(false, std::memory_order_release);
 
     m_ctrl = new UDPWorker("0.0.0.0", local_port, 4 * 1024 * 1024, this);
     m_data = new UDPDataThread("0.0.0.0", m_target_port, m_recv_buffer, 4, this);
