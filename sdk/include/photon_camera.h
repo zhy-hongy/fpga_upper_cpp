@@ -4,7 +4,7 @@
 #include <cstdint>
 
 // =========================================================================
-// 1. DLL 导出/导入宏与调用约定
+// 1. DLL 导出/导入宏
 // =========================================================================
 #if defined(_WIN32) || defined(_WIN64)
     #ifdef PHOTONSDK_EXPORTS
@@ -22,164 +22,165 @@
 extern "C" {
 #endif
 
-// 设备句柄 (指向 SDK 内部 CameraDevice 对象，不代表宿主 ProtocolHandler)
+// 设备句柄。由 Cam_OpenNetworkDevice 等函数创建，Cam_CloseDevice 释放。
+// 句柄仅代表已打开的设备，不代表底层的网络连接。
 typedef void* CameraHandle;
 
 // =========================================================================
-// 2. 状态码与通用枚举
+// 2. 错误码与枚举
 // =========================================================================
 
-// 统一错误码。
-// 数值约定：
-//   - 与 FPGA 协议错误码语义相同的项，使用与 FPGA 完全一致的数值（见各行注释）。
-//   - SDK 自身定义的错误码（FPGA 没有对应项）从已有码值之后按正数递增，不使用负数。
-//   - CAM_PENDING 不是错误，表示异步命令已提交、结果经回调通知。
+// 所有 API 的返回值类型。
+// CAM_PENDING 不是错误，表示异步命令已提交，结果将通过回调通知。
 enum CamError : int32_t {
-    // ── 与 FPGA 协议错误码一一对应（相同语义 = 相同数值）──
-    CAM_OK                   = 0,   // 成功（FPGA 协议 0x0000）
-    CAM_ERR_CRC_FAILED       = 1,   // CRC 校验失败（FPGA 协议 0x0001）
-    CAM_ERR_INVALID_PARAM    = 2,   // 参数错误（FPGA 协议 0x0002）
-    CAM_ERR_INVALID_FUNCTION = 6,   // 功能码错误：命令功能码 FPGA 不支持（FPGA 协议 0x0006）
-    CAM_ERR_DEVICE_BUSY      = 7,   // 设备忙（FPGA 协议 0x0007）
-    CAM_ERR_INVALID_LENGTH   = 8,   // 消息长度错误：命令/应答长度与协议不符（FPGA 协议 0x0008）
+    CAM_OK                   = 0,   // 成功
+    CAM_ERR_CRC_FAILED       = 1,   // 通信校验失败
+    CAM_ERR_INVALID_PARAM    = 2,   // 参数无效（空指针、越界等）
+    CAM_ERR_UNKNOWN          = 3,   // 未知错误
+    CAM_ERR_NOT_INITIALIZED  = 4,   // 未初始化，请先调用 Cam_Initialize
+    CAM_ERR_INVALID_HANDLE   = 5,   // 设备句柄无效（已关闭或为空）
+    CAM_ERR_INVALID_FUNCTION = 6,   // 设备不支持该功能码
+    CAM_ERR_DEVICE_BUSY      = 7,   // 设备忙（已有设备打开，或模式冲突）
+    CAM_ERR_INVALID_LENGTH   = 8,   // 数据长度不匹配
+    CAM_ERR_NO_DEVICE        = 9,   // 设备不存在或离线
+    CAM_ERR_DISCONNECTED     = 10,  // 网络连接断开
+    CAM_ERR_TIMEOUT          = 11,  // 通信超时
+    CAM_ERR_BUFFER_TOO_SMALL = 12,  // 缓冲区不足
+    CAM_ERR_NOT_SUPPORTED    = 13,  // 当前版本不支持该功能
 
-    // ── SDK 专用错误码（无 FPGA 对应项，按正数递增）──
-    CAM_ERR_UNKNOWN          = 3,   // 未知错误（SDK 专用）
-    CAM_ERR_NOT_INITIALIZED  = 4,   // SDK 未初始化：需先调用 Cam_Initialize（SDK 专用）
-    CAM_ERR_INVALID_HANDLE   = 5,   // 无效的相机句柄：传入句柄为空或已被关闭（SDK 专用）
-    CAM_ERR_NO_DEVICE        = 9,   // 指定 Sensor/设备不存在或离线（SDK 专用）
-    CAM_ERR_DISCONNECTED     = 10,  // 网络连接断开（SDK 专用）
-    CAM_ERR_TIMEOUT          = 11,  // 通信超时：等待 FPGA ACK 或同步数据超时（SDK 专用）
-    CAM_ERR_BUFFER_TOO_SMALL = 12,  // 缓冲区不足：调用方提供的缓冲区小于所需大小（SDK 专用）
-    CAM_ERR_NOT_SUPPORTED    = 13,  // 不支持的功能：协议未实现或设备类型不支持（SDK 专用）
-
-    CAM_PENDING              = 100  // 异步命令已提交，结果经回调通知（非阻塞，非错误）
+    CAM_PENDING              = 100  // 异步命令已提交，等待回调结果
 };
 
 // 设备运行状态
 enum DeviceRunState : uint32_t {
-    STATE_IDLE      = 0,            // 空闲
-    STATE_READY     = 1,            // 就绪
+    STATE_IDLE      = 0,            // 空闲（未打开设备）
+    STATE_READY     = 1,            // 就绪（设备已打开，未采集）
     STATE_RUNNING   = 2,            // 采集中
     STATE_STOPPING  = 3,            // 停止中
     STATE_ERROR     = 4             // 错误
 };
 
-// 数据类型
+// 帧数据类型
 enum PixelFormat : uint16_t {
-    PIXEL_FMT_MONO8          = 0x01, // 2D 灰度图 (0x0301)
-    PIXEL_FMT_CENTERLINE_F32 = 0x10, // 激光中心线 (0x0302)
-    PIXEL_FMT_POINTCLOUD_XYZ = 0x20  // 3D 点云 (0x0303)
+    PIXEL_FMT_MONO8          = 0x01, // 2D 灰度图
+    PIXEL_FMT_CENTERLINE_F32 = 0x10, // 激光中心线
+    PIXEL_FMT_POINTCLOUD_XYZ = 0x20  // 3D 点云
 };
 
 #pragma pack(push, 1)
 
 // =========================================================================
-// 3. 结构体定义 (SDK 高层 API 数据抽象层)
+// 3. 数据结构
 // =========================================================================
 
-// 3.1 主控板网络配置
+// 网络配置
 struct EthernetConfig {
     uint32_t deviceIp;              // 设备 IP
-    uint32_t pcIp;                  // 本机/PC IP
+    uint32_t pcIp;                  // 本机 IP
     uint32_t subnetMask;            // 子网掩码
     uint32_t gateway;               // 默认网关
     uint8_t  mac[6];                // MAC 地址
 };
 
-// 3.2 主控板信息 (仅 FPGA 主控硬件信息)
+// 设备（主控板）信息
 struct DeviceInformation {
-    uint32_t       deviceSN;        // 主控硬件 SN
-    char           fpgaVersion[8];  // FPGA 固件版本
+    uint32_t       deviceSN;        // 设备序列号
+    char           fpgaVersion[8];  // 固件版本
     EthernetConfig network;         // 网络参数
-    uint32_t       status;          // FPGA 基础状态
+    uint32_t       status;          // 状态（1=在线）
 };
 
-// 3.3 Sensor 硬件信息 (只读)
+// Sensor 信息（只读）
+// 注意：当前版本暂不支持读取 Sensor 硬件信息，调用将返回 CAM_ERR_NOT_SUPPORTED。
 struct SensorInformation {
-    uint16_t sensorId;              // Sensor 位置编号 (1~4)
-    uint32_t sensorSN;              // Sensor 硬件 SN
+    uint16_t sensorId;              // Sensor 编号 (1~4)
+    uint32_t sensorSN;              // Sensor 序列号
     char     firmwareVersion[8];    // Sensor 固件版本
-    char     model[8];              // 相机型号 (如 "CAM-3D01")
+    char     model[8];              // 相机型号
 };
 
-// 3.4 Sensor 核心基础配置
+// Sensor 配置
+// 注意：ROI 字段 (roiStart, roiWidth) 和物理测量字段 (pixelPitch, zMin, zMax)
+// 当前版本暂不支持，设置这些字段为非零值将返回 CAM_ERR_NOT_SUPPORTED。
+// 支持的字段：exposureTime, gain, exposureDelay, sampleRate。
 struct SensorConfig {
-    // 曝光与增益
-    uint32_t exposureTime;          // 曝光时间 (us)
-    uint32_t gain;                  // 曝光增益
-    uint32_t exposureDelay;         // 曝光延迟
+    uint32_t exposureTime;          // 曝光时间 (微秒)
+    uint32_t gain;                  // 增益
+    uint32_t exposureDelay;         // 曝光延迟 (微秒)
 
-    // 图像 ROI
-    uint16_t roiStart;              // ROI 起始列
-    uint16_t roiWidth;              // ROI 宽度
+    uint16_t roiStart;              // ROI 起始列（暂不支持，请置 0）
+    uint16_t roiWidth;              // ROI 宽度（暂不支持，请置 0）
 
-    // 物理与测量参数
-    float    pixelPitch;            // X 轴像素尺寸
-    uint16_t zMin;                  // Z 轴测量范围 Min
-    uint16_t zMax;                  // Z 轴测量范围 Max
+    float    pixelPitch;            // X 轴像素尺寸（暂不支持，请置 0）
+    uint16_t zMin;                  // Z 轴测量范围最小值（暂不支持，请置 0）
+    uint16_t zMax;                  // Z 轴测量范围最大值（暂不支持，请置 0）
 
-    // 采样
-    uint32_t sampleRate;            // FPS / LineRate
+    uint32_t sampleRate;            // 采样率 (Hz)
 };
 
-// 3.5 触发与控制配置
+// 触发配置
 struct TriggerConfig {
-    uint16_t triggerMode;           // 1:连续, 2:编码器, 3:外部IO
-    uint16_t encoderType;           // 1:差分, 2:单端
-    uint16_t encoderInputMode;      // 1:4倍频, 2:2倍频, 3:1倍频
+    uint16_t triggerMode;           // 触发模式: 1=连续, 2=编码器, 3=外部IO
+    uint16_t encoderType;           // 编码器类型: 1=差分, 2=单端
+    uint16_t encoderInputMode;      // 编码器输入模式: 1=4倍频, 2=2倍频, 3=1倍频
     uint32_t encoderStep;           // 触发间隔脉冲数
-    uint16_t externalEnable;        // 外部触发使能 (0:关, 1:开)
-    uint16_t reserved;              // 协议预留填充
+    uint16_t externalEnable;        // 外部触发使能: 0=关闭, 1=开启
+    uint16_t reserved;              // 保留字段
 };
 
-// 3.6 批处理配置
+// 批处理配置
 struct BatchConfig {
     uint16_t length;                // 批处理行数
 };
 
-// 3.7 Sensor 专属标定数据块 (128 字节二进制块)
+// 标定数据（128 字节）
+// 注意：当前版本暂不支持标定数据读写，调用将返回 CAM_ERR_NOT_SUPPORTED。
 struct CalibrationData {
-    uint8_t  data[128];             // 128 字节标定矩阵二进制块
+    uint8_t  data[128];
 };
 
-// 3.8 设备搜索列表
+// 设备搜索列表
 struct DeviceList {
-    uint32_t count;                 // 搜索到的 FPGA 网关数量
-    DeviceInformation devices[16];  // 主控板列表
+    uint32_t count;                 // 搜索到的设备数量
+    DeviceInformation devices[16];  // 设备列表（最多 16 台）
 };
 
-// 3.9 多通道异步数据回调头信息 (包含 sensorId 标识数据源通道)
+// 帧头信息（回调或同步取帧时返回）
 struct FrameInfo {
-    uint32_t    frameId;            // 全局帧号
-    uint16_t    sensorId;           // 数据来源 Sensor 编号 (1~4)
-    uint32_t    batchId;            // 当前批次编号
+    uint32_t    frameId;            // 帧序号
+    uint16_t    sensorId;           // 数据来源 Sensor (1~4)
+    uint32_t    batchId;            // 批次编号
     uint32_t    lineIndex;          // 批次内行号 (0 ~ N-1)
-    uint64_t    encoder;            // 触发瞬间的编码器绝对脉冲值
-    uint64_t    timestamp;          // 时间戳 (us)
-    uint16_t    width;              // 列数 / 点数
-    uint16_t    height;             // 行数
-    uint32_t    dataSize;           // 载荷大小 (Bytes)
-    PixelFormat dataType;           // 数据类型 (图像/中心线/点云)
+    uint64_t    encoder;            // 编码器脉冲值
+    uint64_t    timestamp;          // 时间戳 (微秒)
+    uint16_t    width;              // 图像宽度 / 点数
+    uint16_t    height;             // 图像高度 / 行数
+    uint32_t    dataSize;           // 数据大小 (字节)
+    PixelFormat dataType;           // 数据类型
 };
 
 #pragma pack(pop)
 
-// 通用数据回调函数指针
-//   pFrameInfo: 帧头信息（含 sensorId、尺寸、时间戳等），SDK 回调期间有效
-//   pData:      帧载荷数据指针（dataSize 字节），SDK 回调期间有效
-//   pUserData:  调用方透传指针（Cam_RegisterDataHandler 传入）
+// =========================================================================
+// 4. 回调函数类型
+// =========================================================================
+
+// 数据帧回调。注册后，每当收到一帧数据 SDK 就会调用此函数。
+//   pFrameInfo : 帧头信息（仅回调期间有效，如需保存请自行拷贝）
+//   pData      : 帧数据指针（仅回调期间有效，dataSize 字节）
+//   pUserData  : 注册时传入的透传指针
+// 注意：回调在 SDK 内部线程执行，不要在回调中调用 Cam_CloseDevice 或 Cam_Finalize。
 typedef void(CAM_CALL *DataHandler)(
     const FrameInfo* pFrameInfo,
     const void* pData,
     void* pUserData
 );
 
-// 异步控制命令结果回调（全异步非阻塞 API 使用）
-//   result:     CAM_OK（ACK 正常返回）/ CAM_ERR_TIMEOUT（超时）/ CAM_ERR_UNKNOWN（投递失败等）
-//   commandId:  本次命令唯一 ID（由 SDK 分配，与调用方无关，仅用于日志/关联）
-//   pUserData:  调用方透传指针
-// 注意：回调在 SDK 内部 CommandManager 线程执行，绝不运行在 UDP / UI / 调用线程。
+// 异步命令结果回调。异步 API 调用后立即返回 CAM_PENDING，结果通过此回调通知。
+//   result    : CAM_OK=成功, CAM_ERR_TIMEOUT=超时, 其他=失败
+//   commandId : 命令编号（SDK 内部分配，可用于日志关联）
+//   pUserData : 调用时传入的透传指针
+// 注意：回调在 SDK 内部线程执行，不要在回调中调用 Cam_CloseDevice 或 Cam_Finalize。
 typedef void(CAM_CALL *CommandResultCallback)(
     CamError result,
     uint16_t commandId,
@@ -187,645 +188,275 @@ typedef void(CAM_CALL *CommandResultCallback)(
 );
 
 // =========================================================================
-// 4. SDK API 导出函数
+// 5. API 函数
 // =========================================================================
 
-// ── 4.1 环境与网关发现 ──────────────────────────────────────────────
+// ── 5.1 生命周期 ──────────────────────────────────────────────────────
 
-/**
- * @brief 初始化 SDK。
- *
- * 必须在调用任何其他 API 之前调用一次。内部会创建全局运行环境
- * （如 Qt 核心环境），并注册内部数据类型。
- *
- * @return CamError
- *   - CAM_OK: 初始化成功（重复调用也返回 CAM_OK，幂等）
- */
+// 初始化 SDK。必须在调用任何其他 API 之前调用。
+// 可重复调用（幂等），返回 CAM_OK。
 CAM_API CamError CAM_CALL Cam_Initialize();
 
-/**
- * @brief 释放 SDK 全部资源。
- *
- * 关闭全部已打开设备、停止独立 SDK 模式的内部通信线程、销毁全局运行环境。
- * 建议在进程退出前调用；未初始化时调用返回 CAM_OK（幂等）。
- *
- * @return CamError
- *   - CAM_OK: 释放成功
- */
+// 释放 SDK 所有资源。关闭所有已打开的设备，释放内部线程和内存。
+// 建议在进程退出前调用。可重复调用（幂等）。
 CAM_API CamError CAM_CALL Cam_Finalize();
 
-/**
- * @brief 获取 SDK 版本字符串。
- *
- * 返回的字符串由 SDK 内部静态存储，调用方无需（也不应）释放。
- *
- * @return const char*: 版本号字符串（如 "1.0.0"）
- */
+// 获取 SDK 版本号，如 "1.0.0"。返回的字符串由 SDK 内部持有，调用方无需释放。
 CAM_API const char* CAM_CALL Cam_GetSdkVersion();
 
-/**
- * @brief 枚举当前可发现的 FPGA 网关（主控板）。
- *
- * 宿主注入模式：上报已注入的 1 台网关（0 台时返回成功但 count=0）。
- * 独立 SDK 模式：若已打开独立设备，上报 1 台。
- *
- * @param pList      [out] 设备列表（count + 主控信息数组），内存由调用方分配
- * @param timeoutMs  枚举等待时间（毫秒），建议 1000
- * @return CamError
- *   - CAM_OK: 枚举成功（pList->count 为实际数量，可为 0）
- *   - CAM_ERR_NOT_INITIALIZED: 未调用 Cam_Initialize
- *   - CAM_ERR_INVALID_PARAM: pList 为空
- */
+// ── 5.2 设备发现 ──────────────────────────────────────────────────────
+
+// 枚举当前网络中可发现的设备。
+//   pList     : [out] 设备列表，内存由调用方分配
+//   timeoutMs : 搜索超时时间（毫秒），建议 1000
 CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceList* pList, uint32_t timeoutMs);
 
-// ── 4.2 宿主集成与网关连接 ─────────────────────────────────────────
+// ── 5.3 打开 / 关闭设备 ────────────────────────────────────────────────
 
-/**
- * @brief 宿主注入模式：将宿主已创建的通信处理器借给 SDK。
- *
- * 宿主 App 初始化完成后，将已有 ProtocolHandler* 指针传入 SDK。
- * SDK 只保存借用指针：不负责创建、不负责释放，生命周期由宿主管理。
- *
- * @param protocolHandler 宿主 ProtocolHandler* 指针（以 void* 传入）
- * @return CamError
- *   - CAM_OK: 注入成功
- *   - CAM_ERR_INVALID_PARAM: protocolHandler 为空
- *   - CAM_ERR_NOT_INITIALIZED: 未调用 Cam_Initialize
- *   - CAM_ERR_DEVICE_BUSY: 已有独立 SDK 设备打开（互斥），或已注入过
- */
-CAM_API CamError CAM_CALL Cam_AttachProtocolHandler(void* protocolHandler);
-
-// ── 4.3 网关连接与主控信息（宿主注入模式）─────────────────────────
-
-/**
- * @brief 宿主模式：按序号打开设备。
- *
- * 系统仅支持 1 台网关，index 固定传 0。
- *
- * @param index   设备序号（0）
- * @param pHandle [out] 相机句柄，成功后由 SDK 写入
- * @return CamError
- *   - CAM_OK: 打开成功
- *   - CAM_ERR_NOT_INITIALIZED: 未初始化
- *   - CAM_ERR_NO_DEVICE: 未注入 ProtocolHandler，或 index 越界
- *   - CAM_ERR_DEVICE_BUSY: 已有一台设备打开（单设备限制）
- *   - CAM_ERR_INVALID_PARAM: pHandle 为空
- */
-CAM_API CamError CAM_CALL Cam_OpenDevice(uint32_t index, CameraHandle* pHandle);
-
-/**
- * @brief 宿主模式：按 IP 打开设备。
- *
- * @param ipAddress 目标网关 IP 字符串（如 "192.168.10.10"）
- * @param pHandle   [out] 相机句柄，成功后由 SDK 写入
- * @return CamError
- *   - CAM_OK: 打开成功
- *   - CAM_ERR_NOT_INITIALIZED: 未初始化
- *   - CAM_ERR_NO_DEVICE: 未注入 ProtocolHandler
- *   - CAM_ERR_DEVICE_BUSY: 已有一台设备打开（单设备限制）
- *   - CAM_ERR_INVALID_PARAM: ipAddress 或 pHandle 为空
- */
-CAM_API CamError CAM_CALL Cam_OpenDeviceByIP(const char* ipAddress, CameraHandle* pHandle);
-
-/**
- * @brief 关闭并释放设备。
- *
- * 若为独立 SDK 模式设备，会先停止内部通信线程（停止收帧），再销毁设备对象。
- * 注意：不能在 SDK 数据回调线程 / 异步命令回调线程内调用本函数。
- *
- * @param handle 相机句柄
- * @return CamError
- *   - CAM_OK: 关闭成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
-CAM_API CamError CAM_CALL Cam_CloseDevice(CameraHandle handle);
-
-/**
- * @brief 获取主控板信息（SN、固件版本、网络配置、状态）。
- *
- * @param handle 相机句柄
- * @param pInfo  [out] 主控板信息，内存由调用方分配
- * @return CamError
- *   - CAM_OK: 获取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pInfo 为空
- */
-CAM_API CamError CAM_CALL Cam_GetDeviceInformation(CameraHandle handle, DeviceInformation* pInfo);
-
-/**
- * @brief 获取设备运行状态。
- *
- * @param handle 相机句柄
- * @param pState [out] 运行状态（见 DeviceRunState）
- * @return CamError
- *   - CAM_OK: 获取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pState 为空
- */
-CAM_API CamError CAM_CALL Cam_GetRunState(CameraHandle handle, DeviceRunState* pState);
-
-// ── 4.3b 独立 SDK 模式（无宿主注入，SDK 内部自建唯一一套通信）───────
-
-/**
- * @brief 独立 SDK 模式：直接连接 FPGA，不依赖上位机。
- *
- * 第三方直接调用 PhotonCameraSDK.dll 连接 FPGA，无需 fpga_upper.exe、
- * 无需调用 Cam_AttachProtocolHandler()：
- *   - SDK 内部创建唯一的通信处理器 ProtocolHandler
- *     （一个 UDPWorker + 一个 UDPDataThread），端口映射与宿主一致：
- *     控制 socket 绑定 controlPort，数据 socket 绑定 dataPort，
- *     控制命令发往 fpgaIp:dataPort。
- *   - 控制/数据流与宿主模式完全一致：异步 ACK（CommandManager）
- *     与数据帧（DataDispatcher → CallbackWorker → DataHandler）。
- *   - 与宿主注入模式互斥：已有宿主 ProtocolHandler（Cam_AttachProtocolHandler）
- *     或已有打开设备时返回 CAM_ERR_DEVICE_BUSY。
- *
- * @param fpgaIp      FPGA 设备 IP 字符串（如 "192.168.10.10"）
- * @param controlPort 本地控制 UDP 绑定端口（默认 5000）
- * @param dataPort    本地数据 UDP 绑定端口 + FPGA 目标端口（默认 60000）
- * @param pHandle     [out] 相机句柄，成功后由 SDK 写入
- * @return CamError
- *   - CAM_OK: 打开成功
- *   - CAM_ERR_NOT_INITIALIZED: 未初始化
- *   - CAM_ERR_INVALID_PARAM: fpgaIp 为空、controlPort/dataPort 为 0，或 pHandle 为空
- *   - CAM_ERR_DEVICE_BUSY: 已有宿主注入或已打开设备（互斥）
- *   - CAM_ERR_UNKNOWN: 内部通信线程启动失败
- */
+// 打开网络设备（直连 FPGA，无需上位机）。这是第三方用户最常用的入口。
+// SDK 内部会创建网络连接，后续所有控制命令和数据帧都通过此连接传输。
+//   fpgaIp      : 设备 IP 地址，如 "192.168.10.10"
+//   controlPort : 控制命令端口（通常 5000）
+//   dataPort    : 数据端口（通常 60000）
+//   pHandle     : [out] 设备句柄，成功后由 SDK 写入
+// 注意：同一时刻只能打开一台设备。如需切换，请先关闭当前设备。
 CAM_API CamError CAM_CALL Cam_OpenNetworkDevice(const char* fpgaIp, uint16_t controlPort,
                                                 uint16_t dataPort, CameraHandle* pHandle);
 
-// ── 4.3c 测试专用 Mock 设备（TEST-ONLY）─────────────────────────────
+// 关闭设备。释放设备相关的所有资源。
+// 注意：不能在数据回调或异步命令回调中调用此函数，否则会死锁。
+CAM_API CamError CAM_CALL Cam_CloseDevice(CameraHandle handle);
 
-/**
- * @brief [TEST-ONLY] 打开测试专用 Mock 设备（无 FPGA 环境验证用）。
- *
- * 与 Cam_OpenNetworkDevice 同签名，但 SDK 内部创建 MockProtocolHandler：
- * 不绑定任何 UDP socket、不产生任何网络收发；控制命令立即回调成功 ACK，
- * 调用 Cam_StartCapture 后按固定参数（1280×1024、sensor=1）生成模拟帧。
- * 仅供 sdk_standalone_test --mock 等测试使用。
- *
- * @param fpgaIp      任意占位 IP（Mock 模式不实际连接）
- * @param controlPort 占位控制端口（Mock 模式不绑定）
- * @param dataPort    占位数据端口（Mock 模式不绑定）
- * @param pHandle     [out] 相机句柄，成功后由 SDK 写入
- * @return CamError
- *   - CAM_OK: 打开成功
- *   - CAM_ERR_INVALID_PARAM: pHandle 为空
- *   - CAM_ERR_DEVICE_BUSY: 已有设备打开（互斥）
- *   - CAM_ERR_UNKNOWN: 内部线程启动失败
- */
-CAM_API CamError CAM_CALL Cam_OpenNetworkDeviceMock(const char* fpgaIp, uint16_t controlPort,
-                                                    uint16_t dataPort, CameraHandle* pHandle);
+// ── 5.4 设备信息 ──────────────────────────────────────────────────────
 
-// ── 4.3d 测试专用：查询 Mock 设备累计"已发送"命令条数（TEST-ONLY）──
+// 获取设备（主控板）信息。
+CAM_API CamError CAM_CALL Cam_GetDeviceInformation(CameraHandle handle, DeviceInformation* pInfo);
 
-/**
- * @brief [TEST-ONLY] 查询 Mock 设备累计记录的"已发送"协议命令条数。
- *
- * 用于验证"未实现协议返回 CAM_ERR_NOT_SUPPORTED 且不发送任何 UDP 命令"。
- * 非 Mock 设备返回 CAM_ERR_NOT_SUPPORTED。
- *
- * @param handle 相机句柄（必须为 Mock 设备）
- * @param pCount [out] 累计已发送命令条数
- * @return CamError
- *   - CAM_OK: 获取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pCount 为空
- *   - CAM_ERR_NOT_SUPPORTED: 非 Mock 设备
- */
-CAM_API CamError CAM_CALL Cam_GetMockSentCommandCount(CameraHandle handle, uint32_t* pCount);
+// 获取设备当前运行状态。
+CAM_API CamError CAM_CALL Cam_GetRunState(CameraHandle handle, DeviceRunState* pState);
 
-// ── 4.4 Sensor 独立节点查询 (sensorId 范围 1~4) ────────────────────
+// ── 5.5 Sensor 信息 ───────────────────────────────────────────────────
 
-/**
- * @brief 获取在线 Sensor 数量。
- *
- * @param handle 相机句柄
- * @param pCount [out] 在线 Sensor 数量
- * @return CamError
- *   - CAM_OK: 获取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pCount 为空
- */
+// 获取在线 Sensor 数量。当前架构固定为 4 个 Sensor 槽位。
 CAM_API CamError CAM_CALL Cam_GetSensorCount(CameraHandle handle, uint32_t* pCount);
 
-/**
- * @brief 获取 Sensor 硬件信息（SN、固件版本、型号）。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pInfo    [out] Sensor 硬件信息，内存由调用方分配
- * @return CamError
- *   - CAM_OK: 获取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pInfo 为空或 sensorId 超出 1~4
- *   - CAM_ERR_NOT_SUPPORTED: 协议未实现
- */
+// 获取 Sensor 硬件信息（序列号、固件版本、型号）。
+// 注意：当前版本暂不支持，始终返回 CAM_ERR_NOT_SUPPORTED。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_GetSensorInformation(CameraHandle handle, uint16_t sensorId, SensorInformation* pInfo);
 
-// ── 4.5 Sensor 参数读写 ────────────────────────────────────────────
+// ── 5.6 Sensor 配置 ───────────────────────────────────────────────────
 
-/**
- * @brief 写 Sensor 基础配置（曝光/增益/ROI/采样率等）。
- *
- * 注意：ROI（roiStart/roiWidth）、物理测量参数（pixelPitch/zMin/zMax）
- * 协议未实现，设置这些字段会返回 CAM_ERR_NOT_SUPPORTED 且不发送任何命令。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pConfig  待写入的配置，内存由调用方分配
- * @return CamError
- *   - CAM_OK: 设置成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 为空
- *   - CAM_ERR_NOT_SUPPORTED: 含未实现的 ROI/物理测量字段
- */
+// 写入 Sensor 配置（曝光、增益、采样率等）。
+// 一次调用会依次设置 exposureTime、gain、exposureDelay、sampleRate。
+// 注意：ROI 和物理测量字段当前不支持，如非零则返回 CAM_ERR_NOT_SUPPORTED。
+//   sensorId : Sensor 编号 (1~4)
+//   pConfig  : 要写入的配置（调用方分配内存）
 CAM_API CamError CAM_CALL Cam_SetSensorConfig(CameraHandle handle, uint16_t sensorId, const SensorConfig* pConfig);
 
-/**
- * @brief 读 Sensor 基础配置。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pConfig  [out] 读回的配置，内存由调用方分配
- * @return CamError
- *   - CAM_OK: 读取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 为空
- */
+// 读取 Sensor 当前配置。
+// 读取的字段：exposureTime、gain、exposureDelay、sampleRate。
+// ROI 和物理测量字段保持调用方传入的初值不变。
+//   sensorId : Sensor 编号 (1~4)
+//   pConfig  : [out] 读回的配置（调用方分配内存）
 CAM_API CamError CAM_CALL Cam_GetSensorConfig(CameraHandle handle, uint16_t sensorId, SensorConfig* pConfig);
 
-// ── 4.6 Trigger & Batch 控制 ────────────────────────────────────────
+// ── 5.7 触发配置 ──────────────────────────────────────────────────────
 
-/**
- * @brief 写触发与控制配置（触发模式、编码器参数、外部触发使能）。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pConfig  待写入的触发配置
- * @return CamError
- *   - CAM_OK: 设置成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 为空
- */
+// 写入触发配置（触发模式、编码器参数、外部触发）。
+// 一次调用会依次设置所有触发相关参数。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_SetTriggerConfig(CameraHandle handle, uint16_t sensorId, const TriggerConfig* pConfig);
 
-/**
- * @brief 读触发与控制配置。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pConfig  [out] 读回的触发配置
- * @return CamError
- *   - CAM_OK: 读取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 为空
- */
+// 读取触发配置。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_GetTriggerConfig(CameraHandle handle, uint16_t sensorId, TriggerConfig* pConfig);
 
-/**
- * @brief 写批处理配置（批处理行数）。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pConfig  待写入的批处理配置
- * @return CamError
- *   - CAM_OK: 设置成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 为空
- */
+// ── 5.8 批处理配置 ────────────────────────────────────────────────────
+
+// 写入批处理配置（批处理行数）。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_SetBatchConfig(CameraHandle handle, uint16_t sensorId, const BatchConfig* pConfig);
 
-/**
- * @brief 读批处理配置。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4）
- * @param pConfig  [out] 读回的批处理配置
- * @return CamError
- *   - CAM_OK: 读取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 为空
- */
+// 读取批处理配置。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_GetBatchConfig(CameraHandle handle, uint16_t sensorId, BatchConfig* pConfig);
 
-// ── 4.7 标定矩阵独立读写 ───────────────────────────────────────────
+// ── 5.9 标定数据 ──────────────────────────────────────────────────────
 
-/**
- * @brief 写 Sensor 标定矩阵（128 字节二进制块）。
- *
- * 协议未实现，一律返回 CAM_ERR_NOT_SUPPORTED 且不发送任何命令。
- *
- * @param handle     相机句柄
- * @param sensorId   Sensor 编号（1~4）
- * @param pCalibData 待写入的标定数据
- * @return CamError
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pCalibData 为空
- *   - CAM_ERR_NOT_SUPPORTED: 协议未实现（恒返回）
- */
+// 写入标定数据（128 字节）。
+// 注意：当前版本暂不支持，始终返回 CAM_ERR_NOT_SUPPORTED。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_WriteCalibration(CameraHandle handle, uint16_t sensorId, const CalibrationData* pCalibData);
 
-/**
- * @brief 读 Sensor 标定矩阵（128 字节二进制块）。
- *
- * 协议未实现，一律返回 CAM_ERR_NOT_SUPPORTED 且不发送任何命令。
- *
- * @param handle     相机句柄
- * @param sensorId   Sensor 编号（1~4）
- * @param pCalibData [out] 读回的标定数据
- * @return CamError
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pCalibData 为空
- *   - CAM_ERR_NOT_SUPPORTED: 协议未实现（恒返回）
- */
+// 读取标定数据（128 字节）。
+// 注意：当前版本暂不支持，始终返回 CAM_ERR_NOT_SUPPORTED。
+//   sensorId : Sensor 编号 (1~4)
 CAM_API CamError CAM_CALL Cam_ReadCalibration(CameraHandle handle, uint16_t sensorId, CalibrationData* pCalibData);
 
-// ── 4.8 采集控制 (sensorId=1~4 操控单通道；sensorId=0 表示对所有在线 Sensor 广播) ──
+// ── 5.10 采集控制 ─────────────────────────────────────────────────────
 
-/**
- * @brief 开始采集指定 Sensor（或广播全部）。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4），0 表示对所有在线 Sensor 广播
- * @return CamError
- *   - CAM_OK: 命令已发出
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// sensorId 说明：
+//   1~4 : 控制指定 Sensor
+//   0   : 对所有在线 Sensor 广播（同时控制 1~4 号 Sensor）
+
+// 开始采集。
 CAM_API CamError CAM_CALL Cam_StartCapture(CameraHandle handle, uint16_t sensorId);
 
-/**
- * @brief 停止采集指定 Sensor（或广播全部）。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4），0 表示对所有在线 Sensor 广播
- * @return CamError
- *   - CAM_OK: 命令已发出
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// 停止采集。
 CAM_API CamError CAM_CALL Cam_StopCapture(CameraHandle handle, uint16_t sensorId);
 
-/**
- * @brief 开始批处理采集。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4），0 表示对所有在线 Sensor 广播
- * @param batchId  本批次编号（由调用方指定）
- * @return CamError
- *   - CAM_OK: 命令已发出
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// 开始批处理采集。
+//   batchId : 批次编号，由调用方指定
 CAM_API CamError CAM_CALL Cam_StartBatch(CameraHandle handle, uint16_t sensorId, uint32_t batchId);
 
-/**
- * @brief 停止批处理采集。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4），0 表示对所有在线 Sensor 广播
- * @return CamError
- *   - CAM_OK: 命令已发出
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// 停止批处理采集。
 CAM_API CamError CAM_CALL Cam_StopBatch(CameraHandle handle, uint16_t sensorId);
 
-/**
- * @brief 复位指定 Sensor 的接收缓冲区。
- *
- * @param handle   相机句柄
- * @param sensorId Sensor 编号（1~4），0 表示对所有在线 Sensor 广播
- * @return CamError
- *   - CAM_OK: 命令已发出
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// 复位 Sensor 接收缓冲区。
 CAM_API CamError CAM_CALL Cam_ResetBuffer(CameraHandle handle, uint16_t sensorId);
 
-// ── 4.9 多通道异步数据回调与同步接收 ───────────────────────────────
+// ── 5.11 数据接收 ─────────────────────────────────────────────────────
 
-/**
- * @brief 注册数据回调。
- *
- * 注册后，SDK 在收到数据帧时在内部回调线程调用 handler。
- * 重复注册会覆盖上一次的 handler 与 pUserData。
- *
- * @param handle    相机句柄
- * @param handler   数据回调函数指针（传 NULL 等价于注销）
- * @param pUserData 调用方透传指针，回调时原样回传（可为 NULL）
- * @return CamError
- *   - CAM_OK: 注册成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// 注册数据帧回调。注册后，每当收到数据帧就会调用 handler。
+// 重复注册会覆盖之前的 handler 和 pUserData。
+//   handler   : 回调函数指针，传 NULL 则注销
+//   pUserData : 透传指针，回调时原样返回（可为 NULL）
 CAM_API CamError CAM_CALL Cam_RegisterDataHandler(CameraHandle handle, DataHandler handler, void* pUserData);
 
-/**
- * @brief 注销数据回调（不再接收数据帧）。
- *
- * @param handle 相机句柄
- * @return CamError
- *   - CAM_OK: 注销成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- */
+// 注销数据帧回调。
 CAM_API CamError CAM_CALL Cam_UnregisterDataHandler(CameraHandle handle);
 
-/**
- * @brief 同步阻塞读取一帧数据。
- *
- * 将指定 Sensor 最新一帧数据拷贝到调用方缓冲区并返回帧头信息。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pFrameInfo [out] 帧头信息，内存由调用方分配
- * @param pDataBuf  [out] 数据缓冲区，内存由调用方分配
- * @param bufSize   缓冲区大小（Bytes），须 ≥ 实际帧大小
- * @param timeoutMs 等待超时（毫秒）
- * @return CamError
- *   - CAM_OK: 获取成功
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pFrameInfo/pDataBuf 为空，bufSize 为 0，或 sensorId 超出 1~4
- *   - CAM_ERR_TIMEOUT: 超时未取到帧
- *   - CAM_ERR_BUFFER_TOO_SMALL: 缓冲区小于帧大小
- */
-CAM_API CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorId, FrameInfo* pFrameInfo, void* pDataBuf, uint32_t bufSize, uint32_t timeoutMs);
+// 同步阻塞读取一帧数据。等待指定 Sensor 的最新一帧，拷贝到调用方缓冲区。
+// 与 Cam_RegisterDataHandler 可同时使用，互不冲突。
+//   sensorId   : Sensor 编号 (1~4)
+//   pFrameInfo : [out] 帧头信息
+//   pDataBuf   : [out] 数据缓冲区（调用方分配）
+//   bufSize    : 缓冲区大小（字节），须 ≥ 实际帧大小
+//   timeoutMs  : 等待超时（毫秒），超时返回 CAM_ERR_TIMEOUT
+CAM_API CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorId,
+                                           FrameInfo* pFrameInfo, void* pDataBuf,
+                                           uint32_t bufSize, uint32_t timeoutMs);
 
-// ── 4.10 异步非阻塞控制 API（立即返回 CAM_PENDING，结果经 CommandResultCallback 通知）──
-// 说明：
-//   - 调用后不等待 FPGA ACK，立即返回 CAM_PENDING；ACK 或超时后回调通知。
-//   - timeoutMs 为本次命令超时（毫秒），超时后回调 result=CAM_ERR_TIMEOUT。
-//   - Get*Async：调用方传入输出指针，SDK 在 ACK 到达、回调触发前填充其值；
-//     调用方需保证该指针在回调前有效。
-//   - 回调在 SDK 内部 CommandManager 线程执行，不要在回调内调用 CloseDevice/Finalize。
+// ── 5.12 异步 API（非阻塞）─────────────────────────────────────────────
 
-/**
- * @brief [异步] 开始采集。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4），0 表示广播全部
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调（ACK 成功→CAM_OK，超时→CAM_ERR_TIMEOUT）
- * @param pUserData 调用方透传指针，回调时原样回传（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: callback 为空
- */
-CAM_API CamError CAM_CALL Cam_StartCaptureAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// 以下所有 Async 函数：
+//   - 调用后立即返回 CAM_PENDING（不等待设备响应），结果通过 callback 通知。
+//   - timeoutMs 指定本次命令的超时时间（毫秒），超时后回调收到 CAM_ERR_TIMEOUT。
+//   - Get*Async 的 [out] 参数（如 pConfig）在回调触发前由 SDK 填充，调用方须保证
+//     该指针在回调触发前一直有效。
+//   - 回调在 SDK 内部线程执行，不要在回调中调用 Cam_CloseDevice 或 Cam_Finalize。
 
-/**
- * @brief [异步] 停止采集。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4），0 表示广播全部
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: callback 为空
- */
-CAM_API CamError CAM_CALL Cam_StopCaptureAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 开始采集
+CAM_API CamError CAM_CALL Cam_StartCaptureAsync(CameraHandle handle, uint16_t sensorId,
+                                                uint32_t timeoutMs, CommandResultCallback callback,
+                                                void* pUserData);
 
-/**
- * @brief [异步] 写 Sensor 基础配置。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pConfig   待写入的配置（SDK 在提交时读取内容）
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 或 callback 为空
- *   - CAM_ERR_NOT_SUPPORTED: 含未实现的 ROI/物理测量字段（不发送命令）
- */
-CAM_API CamError CAM_CALL Cam_SetSensorConfigAsync(CameraHandle handle, uint16_t sensorId, const SensorConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 停止采集
+CAM_API CamError CAM_CALL Cam_StopCaptureAsync(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs, CommandResultCallback callback,
+                                               void* pUserData);
 
-/**
- * @brief [异步] 读 Sensor 基础配置。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pConfig   [out] 读回配置存放区（须在回调前保持有效）
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 或 callback 为空
- */
-CAM_API CamError CAM_CALL Cam_GetSensorConfigAsync(CameraHandle handle, uint16_t sensorId, SensorConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 写入 Sensor 配置
+CAM_API CamError CAM_CALL Cam_SetSensorConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                   const SensorConfig* pConfig, uint32_t timeoutMs,
+                                                   CommandResultCallback callback, void* pUserData);
 
-/**
- * @brief [异步] 写触发与控制配置。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pConfig   待写入的触发配置
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 或 callback 为空
- */
-CAM_API CamError CAM_CALL Cam_SetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId, const TriggerConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 读取 Sensor 配置
+CAM_API CamError CAM_CALL Cam_GetSensorConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                   SensorConfig* pConfig, uint32_t timeoutMs,
+                                                   CommandResultCallback callback, void* pUserData);
 
-/**
- * @brief [异步] 读触发与控制配置。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pConfig   [out] 读回配置存放区（须在回调前保持有效）
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 或 callback 为空
- */
-CAM_API CamError CAM_CALL Cam_GetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId, TriggerConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 写入触发配置
+CAM_API CamError CAM_CALL Cam_SetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                    const TriggerConfig* pConfig, uint32_t timeoutMs,
+                                                    CommandResultCallback callback, void* pUserData);
 
-/**
- * @brief [异步] 写批处理配置。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pConfig   待写入的批处理配置
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 或 callback 为空
- */
-CAM_API CamError CAM_CALL Cam_SetBatchConfigAsync(CameraHandle handle, uint16_t sensorId, const BatchConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 读取触发配置
+CAM_API CamError CAM_CALL Cam_GetTriggerConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                    TriggerConfig* pConfig, uint32_t timeoutMs,
+                                                    CommandResultCallback callback, void* pUserData);
 
-/**
- * @brief [异步] 读批处理配置。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4）
- * @param pConfig   [out] 读回配置存放区（须在回调前保持有效）
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: pConfig 或 callback 为空
- */
-CAM_API CamError CAM_CALL Cam_GetBatchConfigAsync(CameraHandle handle, uint16_t sensorId, BatchConfig* pConfig, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 写入批处理配置
+CAM_API CamError CAM_CALL Cam_SetBatchConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                  const BatchConfig* pConfig, uint32_t timeoutMs,
+                                                  CommandResultCallback callback, void* pUserData);
 
-/**
- * @brief [异步] 开始批处理采集。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4），0 表示广播全部
- * @param batchId   本批次编号（由调用方指定）
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: callback 为空
- */
-CAM_API CamError CAM_CALL Cam_StartBatchAsync(CameraHandle handle, uint16_t sensorId, uint32_t batchId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 读取批处理配置
+CAM_API CamError CAM_CALL Cam_GetBatchConfigAsync(CameraHandle handle, uint16_t sensorId,
+                                                  BatchConfig* pConfig, uint32_t timeoutMs,
+                                                  CommandResultCallback callback, void* pUserData);
 
-/**
- * @brief [异步] 停止批处理采集。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4），0 表示广播全部
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: callback 为空
- */
-CAM_API CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 开始批处理采集
+CAM_API CamError CAM_CALL Cam_StartBatchAsync(CameraHandle handle, uint16_t sensorId, uint32_t batchId,
+                                              uint32_t timeoutMs, CommandResultCallback callback,
+                                              void* pUserData);
 
-/**
- * @brief [异步] 复位指定 Sensor 接收缓冲区。
- *
- * @param handle    相机句柄
- * @param sensorId  Sensor 编号（1~4），0 表示广播全部
- * @param timeoutMs 命令超时（毫秒）
- * @param callback  结果回调
- * @param pUserData 调用方透传指针（可为 NULL）
- * @return CamError
- *   - CAM_PENDING: 命令已提交，结果经回调通知
- *   - CAM_ERR_INVALID_HANDLE: 句柄无效
- *   - CAM_ERR_INVALID_PARAM: callback 为空
- */
-CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sensorId, uint32_t timeoutMs, CommandResultCallback callback, void* pUserData);
+// [异步] 停止批处理采集
+CAM_API CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t sensorId,
+                                             uint32_t timeoutMs, CommandResultCallback callback,
+                                             void* pUserData);
+
+// [异步] 复位缓冲区
+CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs, CommandResultCallback callback,
+                                               void* pUserData);
+
+// =========================================================================
+// 6. 典型调用流程
+// =========================================================================
+//
+// 最简示例（直连 FPGA）：
+//
+//   Cam_Initialize();
+//
+//   CameraHandle handle = nullptr;
+//   Cam_OpenNetworkDevice("192.168.10.10", 5000, 60000, &handle);
+//
+//   // 注册数据回调
+//   Cam_RegisterDataHandler(handle, MyDataHandler, nullptr);
+//
+//   // 配置 Sensor 1
+//   SensorConfig cfg = {};
+//   cfg.exposureTime = 1000;
+//   cfg.gain         = 200;
+//   cfg.sampleRate   = 100;
+//   Cam_SetSensorConfig(handle, 1, &cfg);
+//
+//   // 开始采集
+//   Cam_StartCapture(handle, 1);
+//
+//   // ... 数据通过 MyDataHandler 回调到达 ...
+//
+//   // 停止并清理
+//   Cam_StopCapture(handle, 1);
+//   Cam_CloseDevice(handle);
+//   Cam_Finalize();
+//
+// 异步示例：
+//
+//   Cam_StartCaptureAsync(handle, 1, 3000,
+//       [](CamError r, uint16_t id, void* ud) {
+//           if (r == CAM_OK) { /* 开始成功 */ }
+//       }, nullptr);
+//   // 立即返回 CAM_PENDING，不阻塞
+
+// =========================================================================
+// 7. 注意事项
+// =========================================================================
+//
+// 1. 初始化：所有 API 调用前必须先调 Cam_Initialize()。
+// 2. 单设备：同一时刻只能打开一台设备。
+// 3. 回调限制：不要在 DataHandler 或 CommandResultCallback 中调用
+//    Cam_CloseDevice 或 Cam_Finalize，否则会死锁。
+// 4. 数据生命周期：回调中的 pFrameInfo 和 pData 仅在回调期间有效，
+//    如需保存请自行拷贝。
+// 5. 资源释放：先 Cam_CloseDevice 关闭所有设备，再 Cam_Finalize 释放 SDK。
+// 6. 暂不支持的功能：ROI 设置、像素尺寸、Z 范围、标定读写、Sensor 信息读取。
+//    这些 API 调用会返回 CAM_ERR_NOT_SUPPORTED。
+// 7. sensorId 范围：1~4 对应 4 个 Sensor 槽位，0 表示广播所有 Sensor。
+// 8. 同步 API 的线程：同步 API（如 Cam_SetSensorConfig）会阻塞等待设备响应，
+//    建议在工作线程中调用，避免阻塞 UI 线程。
 
 #ifdef __cplusplus
 }
