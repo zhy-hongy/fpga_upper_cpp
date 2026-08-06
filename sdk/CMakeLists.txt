@@ -20,6 +20,10 @@ set(SDK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/data_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/callback_worker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/command_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/sdk_protocol_thread.cpp
+    # 测试专用 Mock 设备（仅 sdk_standalone_test --mock 使用；编译进 DLL 以便
+    # 独立测试程序只 include photon_camera.h 即可验证，无 FPGA 环境）。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../sdk_test/mock/mock_protocol_handler.cpp
 )
 
 add_library(PhotonCameraSDK SHARED ${SDK_COMMON_SOURCES} ${SDK_SOURCES})

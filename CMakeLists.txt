@@ -90,6 +90,33 @@ add_custom_command(TARGET fpga_upper POST_BUILD
         $<TARGET_FILE_DIR:fpga_upper>/assets
 )
 
+# ── sdk_standalone_test: 第三方独立 SDK 模式验证（只 include photon_camera.h）──
+# 独立模式由 SDK 内部自建唯一一套通信（Cam_OpenNetworkDevice/Mock），
+# 测试进程不调用 Cam_AttachProtocolHandler。纯 C++17，不链接 Qt。
+add_executable(sdk_standalone_test
+    sdk_standalone_test/main.cpp
+)
+
+target_include_directories(sdk_standalone_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/include   # photon_camera.h (dllimport)
+)
+
+if(MSVC)
+    target_compile_options(sdk_standalone_test PRIVATE /utf-8)
+endif()
+
+target_link_libraries(sdk_standalone_test PRIVATE
+    PhotonCameraSDK
+)
+
+# 部署：把 SDK DLL 复制到测试 exe 同级目录，运行时才能加载
+add_custom_command(TARGET sdk_standalone_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:PhotonCameraSDK>
+        $<TARGET_FILE_DIR:sdk_standalone_test>/PhotonCameraSDK.dll
+    COMMENT "Copying PhotonCameraSDK.dll next to sdk_standalone_test.exe"
+)
+
 # ── Windows-specific: hide console + deploy Qt plugins ──
 if(WIN32)
     # Hide the console window (remove if you want console output for debugging)

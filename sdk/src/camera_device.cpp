@@ -2,25 +2,99 @@
 
 #include <cstring>
 
+#include <QCoreApplication>
 #include <QMap>
 #include <QMutex>
 #include <QMutexLocker>
 
 #include "sdk/src/frame_packet.h"
+#include "sdk/src/sdk_protocol_thread.h"
+#include "sdk_test/mock/mock_protocol_handler.h"
 
 namespace {
 
-// ── SDK 全局状态（借用协议指针 + 已打开设备表）────────────────────
-// 约束：只保存宿主 ProtocolHandler*，绝不 new ProtocolHandler。
+// ── SDK 全局状态（借用协议指针 + 已打开设备表 + 独立模式内部通信）────────────────
+// 约束：宿主模式只保存宿主 ProtocolHandler*（borrowed, never owned）；
+//       独立模式（Cam_OpenNetworkDevice/Mock）由 SDK 拥有内部 SdkProtocolThread。
+// 两种模式互斥：任意时刻至多存在【一套】UDPWorker + UDPDataThread。
 QMutex               g_mutex;        // 保护下面全局状态
 bool                 g_initialized = false;
-ProtocolHandler*     g_protocol = nullptr;      // borrowed, never owned
+ProtocolHandler*     g_protocol = nullptr;      // borrowed, never owned（宿主注入）
 QMap<CameraHandle, CameraDevice*> g_devices;    // 句柄 -> SDK 内部设备
 
-const uint32_t kMaxGatewayCount = 1;  // 当前宿主接入方式：单 FPGA 网关
+// 独立 SDK 模式内部通信宿主线程（owned）。非空 ⇔ 独立设备已打开。
+SdkProtocolThread*   g_internalThread = nullptr;
+
+// 独立模式（第三方非 Qt 进程）自建的 QCoreApplication。
+// 原因：ProtocolAdapter 的控制投递用 QMetaObject::invokeMethod(..., QueuedConnection)，
+// 事件投递依赖 QCoreApplication::sendEvent 路由——进程内没有 Qt App 实例时
+// QMetaCallEvent 永不投递，SdkProtocolThread 的 exec() 事件循环不会处理它，
+// 导致异步/同步控制命令全部超时。宿主（fpga_upper.exe 已是 Qt App）不触发。
+QCoreApplication*    g_app = nullptr;            // owned（仅当本 DLL 自建时非空）
+int                  s_appArgc = 1;
+char                 s_appName[] = "PhotonCameraSDK";
+char*                s_appArgv[] = { s_appName, nullptr };
+
+const uint32_t kMaxGatewayCount = 1;  // 当前接入方式：单 FPGA 网关
 
 CameraDevice* device_for(CameraHandle handle) {
     return g_devices.value(handle, nullptr);
+}
+
+// 独立模式端口映射（与宿主一致）：controlPort=本地控制绑定，dataPort=本地数据绑定
+// + FPGA 目标端口；命令发往 target_host:dataPort。
+Config make_standalone_config(const QString& ip, uint16_t controlPort, uint16_t dataPort) {
+    Config c;
+    c.target_host = ip;
+    c.target_port = dataPort;
+    c.control_port = controlPort;
+    c.data_port = dataPort;
+    c.host_ip = "0.0.0.0";
+    return c;
+}
+
+// 通用内部打开逻辑（mockMode=true 时创建 MockProtocolHandler，无 UDP；否则真实通信）。
+// 调用方必须已持有 g_mutex。
+CamError open_internal(const char* fpgaIp, uint16_t controlPort, uint16_t dataPort,
+                       CameraHandle* pHandle, bool mockMode) {
+    if (!g_initialized) return CAM_ERR_NOT_INITIALIZED;
+    if (g_protocol) return CAM_ERR_DEVICE_BUSY;          // 宿主模式已注入
+    if (!g_devices.isEmpty()) return CAM_ERR_DEVICE_BUSY; // 单设备限制
+    if (g_internalThread) return CAM_ERR_DEVICE_BUSY;     // 独立设备已打开
+
+    SdkProtocolThread* th = new SdkProtocolThread(
+        make_standalone_config(QString::fromUtf8(fpgaIp), controlPort, dataPort),
+        mockMode);
+    th->start();
+    ProtocolHandler* internal = th->wait_ready();
+    if (!internal) {
+        // 内部 handler 创建失败（超时等）：回收线程后返回错误。
+        th->request_stop();
+        delete th;
+        return CAM_ERR_UNKNOWN;
+    }
+
+    CameraDevice* dev = new CameraDevice(internal, 0);
+    dev->set_ip(QString::fromUtf8(fpgaIp));
+    dev->open();
+    *pHandle = dev;
+    g_devices.insert(dev, dev);
+    g_internalThread = th;
+    return CAM_OK;
+}
+
+// 停止并销毁独立模式内部通信线程（不持 g_mutex 调用；内部会 wait()）。
+void stop_internal_thread() {
+    SdkProtocolThread* th = nullptr;
+    {
+        QMutexLocker locker(&g_mutex);
+        th = g_internalThread;
+        g_internalThread = nullptr;
+    }
+    if (th) {
+        th->request_stop();
+        delete th;
+    }
 }
 
 }  // namespace
@@ -84,6 +158,11 @@ CAM_API CamError CAM_CALL Cam_Initialize() {
     if (g_initialized) return CAM_OK;
     // FramePacket 跨线程 QueuedConnection 依赖 metatype 注册（幂等，可重复调用）
     qRegisterMetaType<FramePacket>("FramePacket");
+    // 独立 SDK 模式：进程内无 Qt App 时自建 QCoreApplication（否则 QueuedConnection 事件
+    // 无法投递，异步/同步控制全部超时）。宿主（fpga_upper.exe 已是 Qt App）不触发。
+    if (!QCoreApplication::instance()) {
+        g_app = new QCoreApplication(s_appArgc, s_appArgv);
+    }
     g_initialized = true;
     return CAM_OK;
 }
@@ -98,11 +177,20 @@ CAM_API CamError CAM_CALL Cam_Finalize() {
         g_protocol = nullptr;
         g_initialized = false;
     }
+    // 独立模式：先停内部通信线程（UDP 停止、不再产生帧），避免与设备析构竞态。
+    // 宿主模式该函数为空操作（g_internalThread == nullptr）。
+    stop_internal_thread();
     // 不持 g_mutex 停止数据链路并销毁：避免回调线程 re-enter SDK 造成死锁。
     // 只销毁 SDK 内部 CameraDevice；借用的 ProtocolHandler 由宿主管理，不释放。
     for (CameraDevice* d : devs) {
         d->stop_data_path();
         delete d;
+    }
+    // 自建的 QCoreApplication 在 Finalize 释放（此时 SDK 内所有 Qt 线程已停）；
+    // 宿主自建的（fpga_upper 的 QApplication）不动。
+    if (g_app) {
+        delete g_app;
+        g_app = nullptr;
     }
     return CAM_OK;
 }
@@ -118,8 +206,9 @@ CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceList* pList, uint32_t /*timeoutM
     if (!g_initialized) return CAM_ERR_NOT_INITIALIZED;
 
     pList->count = 0;
-    // 当前接入方式：宿主传入单个 ProtocolHandler（即单 FPGA 网关）。
-    if (g_protocol) {
+    // 当前接入方式：宿主传入单个 ProtocolHandler（即单 FPGA 网关），
+    // 或独立 SDK 模式（Cam_OpenNetworkDevice/Mock）内部通信已打开。
+    if (g_protocol || g_internalThread) {
         pList->count = 1;
         DeviceInformation& info = pList->devices[0];
         std::memset(&info, 0, sizeof(info));
@@ -135,6 +224,7 @@ CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceList* pList, uint32_t /*timeoutM
 CAM_API CamError CAM_CALL Cam_AttachProtocolHandler(void* protocolHandler) {
     QMutexLocker locker(&g_mutex);
     if (!protocolHandler) return CAM_ERR_INVALID_PARAM;
+    if (g_internalThread) return CAM_ERR_DEVICE_BUSY;  // 独立 SDK 模式已打开，互斥
     g_protocol = static_cast<ProtocolHandler*>(protocolHandler);  // borrowed
     return CAM_OK;
 }
@@ -175,16 +265,56 @@ CAM_API CamError CAM_CALL Cam_OpenDeviceByIP(const char* ipAddress, CameraHandle
     return CAM_OK;
 }
 
+// =========================================================================
+// 4.3b 独立 SDK 模式（无宿主注入，SDK 内部自建唯一一套通信）
+// =========================================================================
+
+CAM_API CamError CAM_CALL Cam_OpenNetworkDevice(const char* fpgaIp, uint16_t controlPort,
+                                                uint16_t dataPort, CameraHandle* pHandle) {
+    if (!pHandle) return CAM_ERR_INVALID_PARAM;
+    if (!fpgaIp || !*fpgaIp) return CAM_ERR_INVALID_PARAM;
+    if (controlPort == 0 || dataPort == 0) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    return open_internal(fpgaIp, controlPort, dataPort, pHandle, /*mockMode=*/false);
+}
+
+// =========================================================================
+// 4.3c 测试专用 Mock 设备（TEST-ONLY，无 FPGA 环境，仅 sdk_standalone_test --mock 使用）
+// =========================================================================
+
+CAM_API CamError CAM_CALL Cam_OpenNetworkDeviceMock(const char* fpgaIp, uint16_t controlPort,
+                                                    uint16_t dataPort, CameraHandle* pHandle) {
+    if (!pHandle) return CAM_ERR_INVALID_PARAM;
+    if (!fpgaIp || !*fpgaIp) return CAM_ERR_INVALID_PARAM;
+    if (controlPort == 0 || dataPort == 0) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    return open_internal(fpgaIp, controlPort, dataPort, pHandle, /*mockMode=*/true);
+}
+
+CAM_API CamError CAM_CALL Cam_GetMockSentCommandCount(CameraHandle handle, uint32_t* pCount) {
+    if (!pCount) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    auto* mock = dynamic_cast<MockProtocolHandler*>(dev->protocol());
+    if (!mock) return CAM_ERR_NOT_SUPPORTED;   // 非 Mock 设备
+    *pCount = static_cast<uint32_t>(mock->sent_command_count());
+    return CAM_OK;
+}
+
 CAM_API CamError CAM_CALL Cam_CloseDevice(CameraHandle handle) {
     CameraDevice* dev = nullptr;
+    bool standalone = false;
     {
         QMutexLocker locker(&g_mutex);
         dev = device_for(handle);
         if (!dev) return CAM_ERR_INVALID_HANDLE;
         g_devices.remove(handle);
+        standalone = (g_internalThread != nullptr);  // 独立模式：关闭的是内部通信设备
     }
+    // 独立模式：先停内部通信线程（UDP 停止、不再产生帧），避免与设备析构竞态。
     // 不持 g_mutex 停止数据链路并销毁：避免回调线程 re-enter SDK 造成死锁。
-    // 只删除 SDK 内部 CameraDevice；借用的 ProtocolHandler 不释放。
+    if (standalone) stop_internal_thread();
     dev->stop_data_path();
     delete dev;
     return CAM_OK;
