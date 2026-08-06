@@ -51,7 +51,7 @@ enum CamError : int32_t {
     CAM_PENDING              = 100  // 异步命令已提交，等待回调结果
 };
 
-// 设备运行状态
+// 设备运行状态 
 enum DeviceRunState : uint32_t {
     STATE_IDLE      = 0,            // 空闲（未打开设备）
     STATE_READY     = 1,            // 就绪（设备已打开，未采集）
@@ -457,6 +457,26 @@ CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sen
 // 7. sensorId 范围：1~4 对应 4 个 Sensor 槽位，0 表示广播所有 Sensor。
 // 8. 同步 API 的线程：同步 API（如 Cam_SetSensorConfig）会阻塞等待设备响应，
 //    建议在工作线程中调用，避免阻塞 UI 线程。
+
+// =========================================================================
+// 8. 内部/测试 API（仅供上位机或测试使用，第三方用户无需关注）
+// =========================================================================
+
+// 打开 Mock 设备（无需真实 FPGA，SDK 内部生成模拟数据）。
+CAM_API CamError CAM_CALL Cam_OpenNetworkDeviceMock(const char* fpgaIp, uint16_t controlPort,
+                                                    uint16_t dataPort, CameraHandle* pHandle);
+
+// 获取 Mock 模式下已发送的命令计数（用于验证未实现协议不发送 UDP 命令）。
+CAM_API CamError CAM_CALL Cam_GetMockSentCommandCount(CameraHandle handle, uint32_t* pCount);
+
+// 注入宿主通信层（上位机内部使用，第三方无需调用）。
+CAM_API CamError CAM_CALL Cam_AttachProtocolHandler(void* protocolHandler);
+
+// 通过注入的宿主通信层打开设备（按索引）。
+CAM_API CamError CAM_CALL Cam_OpenDevice(uint32_t index, CameraHandle* pHandle);
+
+// 通过注入的宿主通信层打开设备（按 IP 地址）。
+CAM_API CamError CAM_CALL Cam_OpenDeviceByIP(const char* ipAddress, CameraHandle* pHandle);
 
 #ifdef __cplusplus
 }
