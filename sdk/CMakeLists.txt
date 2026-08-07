@@ -1,4 +1,4 @@
-# ── PhotonCameraSDK DLL ──
+# ── CameraSDK DLL ──
 # 与宿主 EXE 同源编译 protocol/ communication/ utils/（ABI 兼容，见 CLAUDE.md 风险说明）。
 # SDK 不创建第二套 UDP / ProtocolHandler / worker，只作为宿主通信链路的适配层 + 数据回调出口。
 
@@ -26,20 +26,20 @@ set(SDK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../sdk_test/mock/mock_protocol_handler.cpp
 )
 
-add_library(PhotonCameraSDK SHARED ${SDK_COMMON_SOURCES} ${SDK_SOURCES})
+add_library(CameraSDK SHARED ${SDK_COMMON_SOURCES} ${SDK_SOURCES})
 
-target_compile_definitions(PhotonCameraSDK PRIVATE PHOTONSDK_EXPORTS)
+target_compile_definitions(CameraSDK PRIVATE PHOTONSDK_EXPORTS)
 
 if(MSVC)
-    target_compile_options(PhotonCameraSDK PRIVATE /utf-8)
+    target_compile_options(CameraSDK PRIVATE /utf-8)
 endif()
 
-target_include_directories(PhotonCameraSDK PRIVATE
+target_include_directories(CameraSDK PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(PhotonCameraSDK PRIVATE
+target_link_libraries(CameraSDK PRIVATE
     Qt6::Core
     Qt6::Network
     ${OpenCV_LIBS}

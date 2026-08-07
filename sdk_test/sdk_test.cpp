@@ -144,7 +144,7 @@ void SDKTest::run() {
     m_test_thread_id = reinterpret_cast<quintptr>(QThread::currentThreadId());
     m_frame_count.store(0);
 
-    log_line(QString("════════ PhotonCameraSDK.dll C-API 验证（测试线程 th=0x%1，模式=%2）════════")
+    log_line(QString("════════ CameraSDK.dll C-API 验证（测试线程 th=0x%1，模式=%2）════════")
                  .arg(m_test_thread_id, 0, 16)
                  .arg(m_mock_mode ? "MOCK（无 FPGA）" : "REAL"));
 

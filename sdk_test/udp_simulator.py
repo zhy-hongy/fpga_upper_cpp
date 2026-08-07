@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FPGA UDP Simulator - for testing PhotonCameraSDK.dll UDP communication
+FPGA UDP Simulator - for testing CameraSDK.dll UDP communication
 
 Protocol:
   - SDK sends control commands to FPGA_IP:dataPort (default 60000)

@@ -21,7 +21,7 @@ class MockProtocolHandler;
 // 运行在 fpga_upper.exe 宿主环境内，复用宿主已有的 ProtocolHandler（真实模式），
 // 或使用独立 MockProtocolHandler（Mock 模式，无 FPGA 环境）：
 //   - 不创建新的 UDP / ProtocolHandler / UDPWorker / UDPDataThread
-//   - 不绕过 SDK 直接访问 FPGA，只通过 PhotonCameraSDK.dll 的 C API 交互
+//   - 不绕过 SDK 直接访问 FPGA，只通过 CameraSDK.dll 的 C API 交互
 //   - 自身是一个 QThread：控制 API 阻塞等待 ACK，需在非 UI 线程调用；
 //     "定时器线程"即本线程内的 Cam_GetFrameSync 周期轮询循环
 //

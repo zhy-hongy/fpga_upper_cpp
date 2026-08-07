@@ -110,11 +110,11 @@ fpga_upper_cpp/
 6. **CMake plugin deployment**: `platforms/` and `imageformats/` Qt plugins are auto-copied to the output dir by POST_BUILD (`qt_deploy_plugin_subdir`). This covers `qwindows*.dll` and `qsvg*.dll`.
 7. **Style precedence**: the dark theme lives entirely in `DARK_QSS` (a `static const char*` in `main_window.cpp`), applied via `setStyleSheet(DARK_QSS)`. The Fusion base style is set in `main.cpp`.
 
-## PhotonCameraSDK 架构约束与集成规范
+## CameraSDK 架构约束与集成规范
 
 ### 1. SDK 职责与禁止项（硬约束）
 
-PhotonCameraSDK.dll 是宿主通信链路的**适配层 + 数据回调出口**。它复用宿主已有的通信栈，**严禁自建任何通信层**：
+CameraSDK.dll 是宿主通信链路的**适配层 + 数据回调出口**。它复用宿主已有的通信栈，**严禁自建任何通信层**：
 
 - ❌ 禁止创建 UDP socket
 - ❌ 禁止创建 `UDPWorker`
@@ -137,7 +137,7 @@ SDK 内唯一允许新增的线程是 `CallbackWorker`（数据回调专用）�
 
 **任何 `ProtocolHandler` 类布局修改，必须同时重新编译**：
 - `fpga_upper.exe`
-- `PhotonCameraSDK.dll`
+- `CameraSDK.dll`
 
 **未来优化方案**：抽取共享的 `fpga_core.dll`，由 EXE 与 SDK 共同链接，消除双份类型与 ODR 风险。
 

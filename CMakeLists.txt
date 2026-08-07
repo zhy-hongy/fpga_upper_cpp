@@ -69,18 +69,18 @@ target_link_libraries(fpga_upper PRIVATE
     ${OpenCV_LIBS}
 )
 
-# ── PhotonCameraSDK DLL (reuses host protocol/communication/utils sources) ──
+# ── CameraSDK DLL (reuses host protocol/communication/utils sources) ──
 add_subdirectory(sdk)
 
-# 宿主以第三方身份链接并调用 PhotonCameraSDK.dll（模拟第三方用户使用）
-target_link_libraries(fpga_upper PRIVATE PhotonCameraSDK)
+# 宿主以第三方身份链接并调用 CameraSDK.dll（模拟第三方用户使用）
+target_link_libraries(fpga_upper PRIVATE CameraSDK)
 
 # 部署：把 SDK DLL 复制到 exe 同级目录，运行时才能加载
 add_custom_command(TARGET fpga_upper POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:PhotonCameraSDK>
-        $<TARGET_FILE_DIR:fpga_upper>/PhotonCameraSDK.dll
-    COMMENT "Copying PhotonCameraSDK.dll next to fpga_upper.exe"
+        $<TARGET_FILE:CameraSDK>
+        $<TARGET_FILE_DIR:fpga_upper>/CameraSDK.dll
+    COMMENT "Copying CameraSDK.dll next to fpga_upper.exe"
 )
 
 # ── Copy assets to build directory ──
@@ -106,21 +106,49 @@ if(MSVC)
 endif()
 
 target_link_libraries(sdk_standalone_test PRIVATE
-    PhotonCameraSDK
+    CameraSDK
 )
 
 # 部署：把 SDK DLL 复制到测试 exe 同级目录，运行时才能加载
 add_custom_command(TARGET sdk_standalone_test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:PhotonCameraSDK>
-        $<TARGET_FILE_DIR:sdk_standalone_test>/PhotonCameraSDK.dll
-    COMMENT "Copying PhotonCameraSDK.dll next to sdk_standalone_test.exe"
+        $<TARGET_FILE:CameraSDK>
+        $<TARGET_FILE_DIR:sdk_standalone_test>/CameraSDK.dll
+    COMMENT "Copying CameraSDK.dll next to sdk_standalone_test.exe"
+)
+
+# ── sdk_standalone_test_gui: 图形化 SDK 测试工具（Qt Widgets）──
+# 使用 Qt6::Widgets 构建界面，通过 CameraSDK.dll 的公开 C API
+# 直连 FPGA，支持设置/读取 Sensor/触发/批处理配置并对比显示。
+add_executable(sdk_standalone_test_gui
+    sdk_standalone_test_gui/main.cpp
+)
+
+target_include_directories(sdk_standalone_test_gui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/include   # photon_camera.h (dllimport)
+)
+
+if(MSVC)
+    target_compile_options(sdk_standalone_test_gui PRIVATE /utf-8)
+endif()
+
+target_link_libraries(sdk_standalone_test_gui PRIVATE
+    CameraSDK
+    Qt6::Widgets
+)
+
+# 部署：把 SDK DLL 复制到 GUI 测试 exe 同级目录
+add_custom_command(TARGET sdk_standalone_test_gui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:CameraSDK>
+        $<TARGET_FILE_DIR:sdk_standalone_test_gui>/CameraSDK.dll
+    COMMENT "Copying CameraSDK.dll next to sdk_standalone_test_gui.exe"
 )
 
 # ── Windows-specific: hide console + deploy Qt plugins ──
 if(WIN32)
     # Hide the console window (remove if you want console output for debugging)
-    # set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
+    set_target_properties(fpga_upper PROPERTIES WIN32_EXECUTABLE TRUE)
 
     # Helper: generator expression for vcpkg plugin directory
     set(_QT_PLUGIN_DIR ${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET})
@@ -153,4 +181,19 @@ if(WIN32)
     add_custom_command(TARGET fpga_upper POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "--- Qt plugins deployed ---"
     )
+
+    # sdk_standalone_test_gui 也需要 Qt 平台/样式插件
+    function(qt_deploy_plugin_for_gui SUBDIR)
+        set(DBG_DIR "${_QT_PLUGIN_DEBUG_DIR}/Qt6/plugins/${SUBDIR}")
+        set(REL_DIR "${_QT_PLUGIN_DIR}/Qt6/plugins/${SUBDIR}")
+        add_custom_command(TARGET sdk_standalone_test_gui POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<IF:$<CONFIG:Debug>,${DBG_DIR},${REL_DIR}>"
+                "$<TARGET_FILE_DIR:sdk_standalone_test_gui>/${SUBDIR}"
+            COMMENT "Deploying Qt ${SUBDIR} plugins for sdk_standalone_test_gui..."
+        )
+    endfunction()
+
+    qt_deploy_plugin_for_gui(platforms)
+    qt_deploy_plugin_for_gui(styles)
 endif()

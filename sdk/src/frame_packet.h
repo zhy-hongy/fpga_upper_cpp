@@ -13,7 +13,7 @@ enum MetadataSource {
     META_SOURCE_UNKNOWN = 2    // 无法确定来源
 };
 
-// 跨层传递的完整数据帧：UDPDataThread -> ProtocolHandler -> PhotonCameraSDK。
+// 跨层传递的完整数据帧：UDPDataThread -> ProtocolHandler -> CameraSDK。
 // 该结构在完成组帧后生成，SDK 侧不重新组帧、不重新解析协议。
 struct FramePacket {
     uint32_t       frameId;          // 全局帧号 (SDK 本地递增)

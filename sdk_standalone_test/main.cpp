@@ -1,6 +1,6 @@
 // sdk_standalone_test/main.cpp
 //
-// 独立 SDK 模式验证程序：只使用 PhotonCameraSDK.dll 的公开 C API（photon_camera.h），
+// 独立 SDK 模式验证程序：只使用 CameraSDK.dll 的公开 C API（photon_camera.h），
 // 不 include 任何 SDK 内部头文件、不调用 Cam_AttachProtocolHandler（无宿主注入）。
 // 纯 C++17，不链接 Qt（Qt 运行时由 DLL 内部自带）。
 //

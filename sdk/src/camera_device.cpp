@@ -32,7 +32,7 @@ SdkProtocolThread*   g_internalThread = nullptr;
 // 导致异步/同步控制命令全部超时。宿主（fpga_upper.exe 已是 Qt App）不触发。
 QCoreApplication*    g_app = nullptr;            // owned（仅当本 DLL 自建时非空）
 int                  s_appArgc = 1;
-char                 s_appName[] = "PhotonCameraSDK";
+char                 s_appName[] = "CameraSDK";
 char*                s_appArgv[] = { s_appName, nullptr };
 
 const uint32_t kMaxGatewayCount = 1;  // 当前接入方式：单 FPGA 网关

@@ -1,6 +1,6 @@
-# PhotonCameraSDK 通信库 — 参考手册
+# CameraSDK 通信库 — 参考手册
 
-**PhotonCameraSDK**（FPGA 相机通信库）
+**CameraSDK**（FPGA 相机通信库）
 
 V1.0.0
 
@@ -33,7 +33,7 @@ V1.0.0
 
 ### 1.1 运行环境
 
-以下内容是在使用 PhotonCameraSDK 通信库执行应用程序时的基本环境。
+以下内容是在使用 CameraSDK 通信库执行应用程序时的基本环境。
 
 **1.1.1 Microsoft C Runtime Library**
 
@@ -49,8 +49,8 @@ V1.0.0
 
 | 文件 | 说明 |
 |---|---|
-| `PhotonCameraSDK.dll` | DLL 本体（依赖 Qt6Core / Qt6Network 动态库，部署时一并拷贝） |
-| `PhotonCameraSDK.lib` | `PhotonCameraSDK.dll` 的引入库 |
+| `CameraSDK.dll` | DLL 本体（依赖 Qt6Core / Qt6Network 动态库，部署时一并拷贝） |
+| `CameraSDK.lib` | `CameraSDK.dll` 的引入库 |
 | `photon_camera.h` | 定义通信接口的头文件 |
 
 ---
@@ -61,12 +61,12 @@ V1.0.0
 
 **运行时依赖 DLL**
 
-- `PhotonCameraSDK.dll`
+- `CameraSDK.dll`
 - `Qt6Cored.dll`、`Qt6Networkd.dll`（及 Qt 运行库相关依赖，由 CMake 部署步骤自动拷贝）
 
 **链接**
 
-- 暗链接：请链接 `PhotonCameraSDK.lib`。
+- 暗链接：请链接 `CameraSDK.lib`。
 
 **包含文件**
 
@@ -1629,4 +1629,4 @@ Cam_Finalize();
 
 ---
 
-*© 2026 PhotonCameraSDK 版权所有*
+*© 2026 CameraSDK 版权所有*
