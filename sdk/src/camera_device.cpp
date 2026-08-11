@@ -532,6 +532,71 @@ CAM_API CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorI
     return CAM_OK;
 }
 
+// ── 4.9b 按类型获取单帧（同步阻塞）────────────────────────────────────────
+
+CAM_API CamError CAM_CALL Cam_GetImageSync(CameraHandle handle, uint16_t sensorId,
+                                           FrameInfo* pFrameInfo, void* pDataBuf,
+                                           uint32_t bufSize, uint32_t timeoutMs) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pFrameInfo || !pDataBuf || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!dev->dispatcher()) return CAM_ERR_NOT_INITIALIZED;
+
+    FramePacket pkt;
+    if (!dev->dispatcher()->wait_latest_type(sensorId, PIXEL_FMT_MONO8, &pkt, static_cast<int>(timeoutMs)))
+        return CAM_ERR_TIMEOUT;
+    if (static_cast<uint32_t>(pkt.data.size()) > bufSize)
+        return CAM_ERR_BUFFER_TOO_SMALL;
+
+    std::memcpy(pDataBuf, pkt.data.constData(), static_cast<size_t>(pkt.data.size()));
+    frame_to_info(pkt, *pFrameInfo);
+    return CAM_OK;
+}
+
+CAM_API CamError CAM_CALL Cam_GetCenterlineSync(CameraHandle handle, uint16_t sensorId,
+                                                FrameInfo* pFrameInfo, void* pDataBuf,
+                                                uint32_t bufSize, uint32_t timeoutMs) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pFrameInfo || !pDataBuf || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!dev->dispatcher()) return CAM_ERR_NOT_INITIALIZED;
+
+    FramePacket pkt;
+    if (!dev->dispatcher()->wait_latest_type(sensorId, PIXEL_FMT_CENTERLINE_F32, &pkt, static_cast<int>(timeoutMs)))
+        return CAM_ERR_TIMEOUT;
+    if (static_cast<uint32_t>(pkt.data.size()) > bufSize)
+        return CAM_ERR_BUFFER_TOO_SMALL;
+
+    std::memcpy(pDataBuf, pkt.data.constData(), static_cast<size_t>(pkt.data.size()));
+    frame_to_info(pkt, *pFrameInfo);
+    return CAM_OK;
+}
+
+CAM_API CamError CAM_CALL Cam_GetPointCloudSync(CameraHandle handle, uint16_t sensorId,
+                                                FrameInfo* pFrameInfo, void* pDataBuf,
+                                                uint32_t bufSize, uint32_t timeoutMs) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pFrameInfo || !pDataBuf || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!dev->dispatcher()) return CAM_ERR_NOT_INITIALIZED;
+
+    FramePacket pkt;
+    if (!dev->dispatcher()->wait_latest_type(sensorId, PIXEL_FMT_POINTCLOUD_XYZ, &pkt, static_cast<int>(timeoutMs)))
+        return CAM_ERR_TIMEOUT;
+    if (static_cast<uint32_t>(pkt.data.size()) > bufSize)
+        return CAM_ERR_BUFFER_TOO_SMALL;
+
+    std::memcpy(pDataBuf, pkt.data.constData(), static_cast<size_t>(pkt.data.size()));
+    frame_to_info(pkt, *pFrameInfo);
+    return CAM_OK;
+}
+
 // =========================================================================
 // 4.10 异步非阻塞控制 API（立即返回 CAM_PENDING，结果经 CommandResultCallback 通知）
 //     callback 在 SDK CommandManager 线程执行，绝不运行在 UDP / UI 线程。
@@ -645,4 +710,210 @@ CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sen
     if (!dev) return CAM_ERR_INVALID_HANDLE;
     if (!callback) return CAM_ERR_INVALID_PARAM;
     return dev->adapter()->reset_buffer_async(sensorId, timeoutMs, callback, pUserData);
+}
+
+// =========================================================================
+// 4.11 按类型获取单帧（异步非阻塞）—— 通过 CallbackWorker 一次性请求
+// =========================================================================
+
+CAM_API CamError CAM_CALL Cam_GetImageAsync(CameraHandle handle, uint16_t sensorId,
+                                            uint32_t timeoutMs, AsyncFrameCallback callback,
+                                            void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!dev->worker()) return CAM_ERR_NOT_INITIALIZED;
+    dev->worker()->submit_async_request(sensorId, PIXEL_FMT_MONO8, timeoutMs, callback, pUserData);
+    return CAM_PENDING;
+}
+
+CAM_API CamError CAM_CALL Cam_GetCenterlineAsync(CameraHandle handle, uint16_t sensorId,
+                                                 uint32_t timeoutMs, AsyncFrameCallback callback,
+                                                 void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!dev->worker()) return CAM_ERR_NOT_INITIALIZED;
+    dev->worker()->submit_async_request(sensorId, PIXEL_FMT_CENTERLINE_F32, timeoutMs, callback, pUserData);
+    return CAM_PENDING;
+}
+
+CAM_API CamError CAM_CALL Cam_GetPointCloudAsync(CameraHandle handle, uint16_t sensorId,
+                                                 uint32_t timeoutMs, AsyncFrameCallback callback,
+                                                 void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!dev->worker()) return CAM_ERR_NOT_INITIALIZED;
+    dev->worker()->submit_async_request(sensorId, PIXEL_FMT_POINTCLOUD_XYZ, timeoutMs, callback, pUserData);
+    return CAM_PENDING;
+}
+
+// =========================================================================
+// 4.12 批处理数据获取
+// =========================================================================
+
+CAM_API CamError CAM_CALL Cam_RequestBatchData(CameraHandle handle, uint16_t sensorId,
+                                           uint32_t /*timeoutMs*/) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->get_batch_data(sensorId);
+}
+
+CAM_API CamError CAM_CALL Cam_RequestBatchDataAsync(CameraHandle handle, uint16_t sensorId,
+                                                uint32_t timeoutMs, CommandResultCallback callback,
+                                                void* pUserData) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!callback) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    return dev->adapter()->get_batch_data_async(sensorId, timeoutMs, callback, pUserData);
+}
+
+// ── 4.12b 阻塞批处理接收（参考光子精密 SDK 的 StartMeasure → ReceiveData 模式）──
+
+// 批处理累加上下文：在临时 DataHandler 和等待线程之间传递状态。
+// 临时 handler 在 CallbackWorker 线程运行，等待线程在调用方线程。
+struct BatchAccumContext {
+    QMutex        mutex;
+    uint32_t      expectedCount = 0;
+    uint32_t      receivedCount = 0;  // 由 mutex 保护
+    BatchBuffer*  buffer = nullptr;
+    DataHandler   origHandler = nullptr;
+    void*         origUserData = nullptr;
+};
+
+// 临时 DataHandler：累加帧到 BatchBuffer，同时转发给原始 handler（如存在）。
+// 在 CallbackWorker 线程执行。
+static void CAM_CALL batch_accum_handler(const FrameInfo* pFrameInfo, const void* pData, void* pUserData) {
+    auto* ctx = static_cast<BatchAccumContext*>(pUserData);
+    if (!ctx || !pFrameInfo || !pData) return;
+
+    // 1) 转发给原始 handler（不为空时调用）
+    if (ctx->origHandler)
+        ctx->origHandler(pFrameInfo, pData, ctx->origUserData);
+
+    // 2) 累加到 BatchBuffer
+    QByteArray frameData(static_cast<const char*>(pData), static_cast<int>(pFrameInfo->dataSize));
+    ctx->buffer->append(*pFrameInfo, frameData);
+
+    // 3) 计数（轮询模式下只需递增计数，无需唤醒）
+    {
+        QMutexLocker lock(&ctx->mutex);
+        ctx->receivedCount++;
+    }
+}
+
+CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs) {
+    CameraDevice* dev = nullptr;
+    {
+        QMutexLocker locker(&g_mutex);
+        dev = device_for(handle);
+    }
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+
+    // 1) 读取 batch_length 确定期望帧数
+    BatchConfig batchCfg;
+    {
+        QMutexLocker locker(&g_mutex);
+        CamError e = dev->adapter()->get_batch_config(sensorId, batchCfg);
+        if (e != CAM_OK) return e;
+    }
+    uint32_t expectedCount = batchCfg.length;
+    if (expectedCount == 0) return CAM_ERR_INVALID_LENGTH;
+
+    // 2) 准备批处理缓存和累加上下文
+    BatchBuffer& buf = dev->batchBuffer(sensorId);
+    buf.clear();
+    buf.expectedCount = expectedCount;
+
+    BatchAccumContext ctx;
+    ctx.expectedCount = expectedCount;
+    ctx.buffer = &buf;
+
+    // 3) 保存原始 handler，设置临时累加 handler
+    CallbackWorker* worker = dev->worker();
+    if (!worker) return CAM_ERR_NOT_INITIALIZED;
+
+    ctx.origHandler = worker->handler();
+    ctx.origUserData = worker->userData();
+    worker->set_handler(batch_accum_handler, &ctx);
+
+    // 4) 发送 CMD_GET_BATCH_DATA 命令
+    CamError sendErr;
+    {
+        QMutexLocker locker(&g_mutex);
+        sendErr = dev->adapter()->get_batch_data(sensorId);
+    }
+    if (sendErr != CAM_OK) {
+        worker->set_handler(ctx.origHandler, ctx.origUserData);
+        return sendErr;
+    }
+
+    // 5) 轮询等待所有帧到达（或超时）。
+    //    使用轮询而非 QWaitCondition 避免唤醒丢失问题：
+    //    batch_accum_handler 在 CallbackWorker 线程运行，invoke_and_wait 阻塞期间
+    //    帧可能已被处理完，此时 wakeOne 会丢失导致 cv.wait 永久阻塞。
+    {
+        QDeadlineTimer deadline(static_cast<qint64>(timeoutMs));
+        while (true) {
+            {
+                QMutexLocker lock(&ctx.mutex);
+                if (ctx.receivedCount >= expectedCount) break;
+            }
+            if (deadline.hasExpired()) {
+                worker->set_handler(ctx.origHandler, ctx.origUserData);
+                return CAM_ERR_TIMEOUT;
+            }
+            QThread::msleep(5);  // 5ms 轮询间隔，足够低延迟
+        }
+    }
+
+    // 6) 恢复原始 handler
+    worker->set_handler(ctx.origHandler, ctx.origUserData);
+    return CAM_OK;
+}
+
+CAM_API uint32_t CAM_CALL Cam_GetBatchPointCount(CameraHandle handle, uint16_t sensorId) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return 0;
+    if (sensorId < 1 || sensorId > 4) return 0;
+    return dev->batchBuffer(sensorId).pointCount();
+}
+
+CAM_API uint32_t CAM_CALL Cam_GetBatchDataWidth(CameraHandle handle, uint16_t sensorId) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return 0;
+    if (sensorId < 1 || sensorId > 4) return 0;
+    return dev->batchBuffer(sensorId).dataWidth();
+}
+
+CAM_API CamError CAM_CALL Cam_GetBatchData(CameraHandle handle, uint16_t sensorId,
+                                           void* pDataBuf, uint32_t bufSize) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!pDataBuf || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+
+    BatchBuffer& buf = dev->batchBuffer(sensorId);
+    QByteArray flat = buf.flatten();
+    if (flat.isEmpty()) return CAM_ERR_NO_DEVICE;  // 无数据
+    if (static_cast<uint32_t>(flat.size()) > bufSize) return CAM_ERR_BUFFER_TOO_SMALL;
+
+    std::memcpy(pDataBuf, flat.constData(), static_cast<size_t>(flat.size()));
+    return CAM_OK;
 }

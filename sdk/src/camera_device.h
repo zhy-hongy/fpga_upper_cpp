@@ -3,15 +3,61 @@
 
 #include <cstdint>
 
+#include <map>
 #include <QMetaObject>
+#include <QMutex>
 #include <QString>
 #include <QThread>
+#include <QVector>
+#include <QByteArray>
 
 #include "sdk/include/photon_camera.h"
 #include "sdk/src/protocol_adapter.h"
 #include "sdk/src/data_dispatcher.h"
 #include "sdk/src/callback_worker.h"
 #include "sdk/src/command_manager.h"
+
+// 批处理数据缓存：Cam_ReceiveBatchData 写入，Cam_GetBatchData 等读取。
+// 线程安全：所有方法用 QMutex 保护，可从任意线程调用。
+struct BatchBuffer {
+    mutable QMutex mutex;
+    std::vector<FrameInfo>  infos;        // 每帧的帧头信息
+    std::vector<QByteArray> datas;        // 每帧的原始数据
+    uint32_t                expectedCount = 0;
+
+    void clear() {
+        QMutexLocker lock(&mutex);
+        infos.clear();
+        datas.clear();
+        expectedCount = 0;
+    }
+
+    uint32_t pointCount() const {
+        QMutexLocker lock(&mutex);
+        return static_cast<uint32_t>(infos.size());
+    }
+
+    uint32_t dataWidth() const {
+        QMutexLocker lock(&mutex);
+        return infos.empty() ? 0 : infos[0].width;
+    }
+
+    // 追加一帧（CallbackWorker 线程调用）
+    void append(const FrameInfo& info, const QByteArray& data) {
+        QMutexLocker lock(&mutex);
+        infos.push_back(info);
+        datas.push_back(data);
+    }
+
+    // 所有帧数据拼接为连续内存块
+    QByteArray flatten() const {
+        QMutexLocker lock(&mutex);
+        QByteArray flat;
+        for (const auto& d : datas)
+            flat.append(d);
+        return flat;
+    }
+};
 
 // CameraDevice 是 SDK 内部设备对象，CameraHandle 句柄即指向它。
 //
@@ -45,6 +91,9 @@ public:
     CallbackWorker* worker() { return m_worker; }
     CommandManager* command_manager() { return m_cmdMgr; }
 
+    // 按 sensorId 获取批处理数据缓存（线程安全，可从任意线程调用）
+    BatchBuffer& batchBuffer(uint16_t sensorId) { return m_batchBuffers[sensorId]; }
+
     void open() { m_open = true; }
     void close() { m_open = false; }
 
@@ -62,6 +111,8 @@ private:
     CallbackWorker* m_worker = nullptr;       // owned（SDK 唯一新增线程）
     CommandManager* m_cmdMgr = nullptr;       // owned（SDK 异步控制命令管理线程）
     QMetaObject::Connection m_frameConn;      // ProtocolHandler::frame_ready → dispatcher
+
+    std::map<uint16_t, BatchBuffer> m_batchBuffers;  // 按 sensorId 索引的批处理缓存
 };
 
 #endif // CAMERA_DEVICE_H

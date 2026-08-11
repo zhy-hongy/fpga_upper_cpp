@@ -30,6 +30,8 @@ struct FramePacket {
     uint16_t       width;            // 列数 / 点数
     uint16_t       height;           // 行数
 
+    uint16_t       cmd_code;         // FPGA 协议命令码 (aa55 帧第 4-5 字节)，用于 frame_to_info 自动识别 PixelFormat
+
     QByteArray     data;             // 载荷数据 (图像原始字节)
 };
 

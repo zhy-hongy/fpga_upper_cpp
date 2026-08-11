@@ -120,7 +120,9 @@ void UDPDataThread::handle_frame(const QByteArray& raw) {
     int data_len = read16(10);
 
     if (data_len < DATA_PER_PACKET) {
-        emit sig_cmd_received(raw);
+        // 数据线程不处理控制帧——控制帧的 ACK 通过 UDPWorker（控制端口）接收。
+        // 如果在此处 emit sig_cmd_received，当 FPGA 未运行时，控制命令自环回
+        // 会导致"写入成功但实际无应答"的假阳性。
         return;
     }
 
@@ -145,6 +147,7 @@ void UDPDataThread::handle_frame(const QByteArray& raw) {
         asm_.image_width = w;
         asm_.image_height = h;
         asm_.expected_packets = h;
+        asm_.cmd_code = static_cast<uint16_t>(cmd);  // 保存 FPGA 命令码，供 assemble_and_push 设置 FramePacket.cmd_code
 
         emit sig_resolution(dev, w, h);
 
@@ -234,6 +237,7 @@ void UDPDataThread::assemble_and_push(int sensor_id) {
     pkt.timestampSource = META_SOURCE_SDK;
     pkt.width = static_cast<uint16_t>(w);
     pkt.height = static_cast<uint16_t>(h);
+    pkt.cmd_code = asm_.cmd_code;  // FPGA 命令码 → frame_to_info 自动识别 PixelFormat
     pkt.data = raw;
     emit sig_frame_ready(pkt);
 

@@ -55,7 +55,11 @@ void ProtocolHandler::setup_connections() {
         emit error_occurred(err);
     });
 
-    connect(m_data, &UDPDataThread::sig_cmd_received, this, &ProtocolHandler::on_raw_response);
+    // 注意：m_data->sig_cmd_received 不连接到 on_raw_response。
+    // UDPDataThread 只负责数据帧的接收和组装，控制帧的 ACK 应答只能通过
+    // UDPWorker（控制端口）接收。如果连接了 m_data->sig_cmd_received，
+    // 当 FPGA 未运行时，控制命令发送到 target_port（与 data_port 相同），
+    // 会被 UDPDataThread 自环回收，导致"写入成功但实际无应答"的假阳性。
     connect(m_data, &UDPDataThread::sig_frame_info, this, &ProtocolHandler::data_frame_info);
     connect(m_data, &UDPDataThread::sig_resolution, this, &ProtocolHandler::data_resolution);
     connect(m_data, &UDPDataThread::sig_frame_ready, this, &ProtocolHandler::frame_ready);

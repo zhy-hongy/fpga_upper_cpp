@@ -126,12 +126,40 @@ void MockProtocolHandler::read_external_trigger(int sensor_id, std::function<voi
     reply(std::move(callback), be16(static_cast<uint16_t>(default_external_trigger())));
 }
 void MockProtocolHandler::set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    m_batch_length = count;  // 记录值，供 get_batch_data 生成帧
     emit_command(CMD_BATCH_LENGTH, RW_WRITE, be16(static_cast<uint16_t>(count)), sensor_id);
     reply(std::move(callback));
 }
 void MockProtocolHandler::read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback) {
     emit_command(CMD_BATCH_LENGTH, RW_READ, QByteArray(2, '\0'), sensor_id);
-    reply(std::move(callback), be16(static_cast<uint16_t>(default_batch_length())));
+    reply(std::move(callback), be16(static_cast<uint16_t>(m_batch_length)));
+}
+void MockProtocolHandler::get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_GET_BATCH_DATA, RW_READ, QByteArray(2, '\0'), sensor_id);
+
+    // 生成 m_batch_length 帧模拟点云数据（CMD_DATA_POINTCLOUD），
+    // 在 ACK 之前同步 emit，确保 Cam_ReceiveBatchData 能收到数据帧。
+    const int count = m_batch_length;
+    for (int i = 0; i < count; ++i) {
+        FramePacket pkt;
+        pkt.frameId = m_frame_id.fetch_add(1) + 1;
+        pkt.sensorId = static_cast<uint16_t>(sensor_id > 0 ? sensor_id : DEV_SENSOR1);
+        pkt.batchId = 0;
+        pkt.lineIndex = static_cast<uint32_t>(i);
+        pkt.encoder = 0;
+        pkt.timestamp = static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()) * 1000;
+        pkt.frameIdSource = META_SOURCE_SDK;
+        pkt.timestampSource = META_SOURCE_SDK;
+        pkt.encoderSource = META_SOURCE_UNKNOWN;
+        pkt.width = 1280;        // 1280 点/行
+        pkt.height = 1;
+        pkt.cmd_code = CMD_DATA_POINTCLOUD;  // 3D 点云类型
+        // 每点 3 个 float (x,y,z) = 12 字节，总计 1280 * 12 = 15360 字节
+        pkt.data = QByteArray(1280 * 12, static_cast<char>(0xAB));
+        emit frame_ready(pkt);
+    }
+
+    reply(std::move(callback), QByteArray(128, '\0'));  // 128 字节零填充默认批处理响应
 }
 void MockProtocolHandler::set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback) {
     QByteArray payload(2, '\0');

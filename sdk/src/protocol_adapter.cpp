@@ -307,6 +307,13 @@ CamError ProtocolAdapter::reset_buffer(uint16_t sensorId) {
     });
 }
 
+CamError ProtocolAdapter::get_batch_data(uint16_t sensorId) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return invoke_and_wait([this, sensorId](const AckCb& cb) {
+        m_protocol->get_batch_data(sensorId, cb);
+    });
+}
+
 // =========================================================================
 // 异步非阻塞控制 API 转发（立即返回 CAM_PENDING）
 // =========================================================================
@@ -511,6 +518,14 @@ CamError ProtocolAdapter::reset_buffer_async(uint16_t sensorId, uint32_t timeout
     if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
     return post_async([this, sensorId](uint16_t id) {
         m_protocol->reset_buffer(sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
+    }, cb, userData, timeoutMs);
+}
+
+CamError ProtocolAdapter::get_batch_data_async(uint16_t sensorId, uint32_t timeoutMs,
+                                               CommandResultCallback cb, void* userData) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    return post_async([this, sensorId](uint16_t id) {
+        m_protocol->get_batch_data(sensorId, [this, id](const ControlFrame&) { m_cmdMgr->ack(id); });
     }, cb, userData, timeoutMs);
 }
 

@@ -187,6 +187,19 @@ typedef void(CAM_CALL *CommandResultCallback)(
     void* pUserData
 );
 
+// 异步帧回调。异步帧 API 调用后立即返回 CAM_PENDING，结果通过此回调通知。
+//   result      : CAM_OK=成功获取帧, CAM_ERR_TIMEOUT=超时
+//   pFrameInfo  : 帧头信息（仅回调期间有效，result==CAM_OK 时非空）
+//   pData       : 帧数据指针（仅回调期间有效，result==CAM_OK 时非空）
+//   pUserData   : 调用时传入的透传指针
+// 注意：回调在 SDK 内部线程执行，不要在回调中调用 Cam_CloseDevice 或 Cam_Finalize。
+typedef void(CAM_CALL *AsyncFrameCallback)(
+    CamError result,
+    const FrameInfo* pFrameInfo,
+    const void* pData,
+    void* pUserData
+);
+
 // =========================================================================
 // 5. API 函数
 // =========================================================================
@@ -310,7 +323,7 @@ CAM_API CamError CAM_CALL Cam_StopCapture(CameraHandle handle, uint16_t sensorId
 //   batchId : 批次编号，由调用方指定
 CAM_API CamError CAM_CALL Cam_StartBatch(CameraHandle handle, uint16_t sensorId, uint32_t batchId);
 
-// 停止批处理采集。
+// 暂停批处理采集。
 CAM_API CamError CAM_CALL Cam_StopBatch(CameraHandle handle, uint16_t sensorId);
 
 // 复位 Sensor 接收缓冲区。
@@ -337,6 +350,62 @@ CAM_API CamError CAM_CALL Cam_UnregisterDataHandler(CameraHandle handle);
 CAM_API CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorId,
                                            FrameInfo* pFrameInfo, void* pDataBuf,
                                            uint32_t bufSize, uint32_t timeoutMs);
+
+// ── 5.11b 按类型获取单帧（阻塞）───────────────────────────────────────────
+
+// 同步阻塞获取一帧图像数据（PIXEL_FMT_MONO8）。等待指定 Sensor 的最新 MONO8 帧。
+// 参数与 Cam_GetFrameSync 相同，但只返回 dataType 匹配的帧。
+CAM_API CamError CAM_CALL Cam_GetImageSync(CameraHandle handle, uint16_t sensorId,
+                                           FrameInfo* pFrameInfo, void* pDataBuf,
+                                           uint32_t bufSize, uint32_t timeoutMs);
+
+// 同步阻塞获取一帧中心线数据（PIXEL_FMT_CENTERLINE_F32）。
+CAM_API CamError CAM_CALL Cam_GetCenterlineSync(CameraHandle handle, uint16_t sensorId,
+                                                FrameInfo* pFrameInfo, void* pDataBuf,
+                                                uint32_t bufSize, uint32_t timeoutMs);
+
+// 同步阻塞获取一帧 3D 点云数据（PIXEL_FMT_POINTCLOUD_XYZ）。
+CAM_API CamError CAM_CALL Cam_GetPointCloudSync(CameraHandle handle, uint16_t sensorId,
+                                                FrameInfo* pFrameInfo, void* pDataBuf,
+                                                uint32_t bufSize, uint32_t timeoutMs);
+
+// ── 5.11c 批处理数据 ─────────────────────────────────────────────────────
+
+// 同步请求批处理数据。发送 CMD_GET_BATCH_DATA (0x0202) 命令请求 FPGA 发送缓存中的
+// 3D 点云线数据。FPGA ACK 后数据通过已注册的 DataHandler 回调到达。
+// 注意：调用前需先通过 Cam_StartBatch 启动批处理，否则 FPGA 无缓存数据。
+CAM_API CamError CAM_CALL Cam_RequestBatchData(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs);
+
+// 阻塞接收批处理数据（同步等待 FPGA 完成批处理并返回所有数据帧）。
+// 内部依次：发送 CMD_GET_BATCH_DATA (0x0202) → 等待 ACK →
+//           阻塞等待所有数据帧到达 → 存入内部缓存。
+// 返回后可通过以下函数获取数据：
+//   - Cam_GetBatchPointCount → 批处理行数
+//   - Cam_GetBatchDataWidth  → 数据宽度
+//   - Cam_GetBatchData       → 原始数据
+// 典型调用：Cam_StartBatch → Cam_ReceiveBatchData → Cam_GetBatchData → Cam_StopBatch
+CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sensorId,
+                                               uint32_t timeoutMs);
+
+// 获取最近一次批处理的行数（Cam_ReceiveBatchData 成功后调用）。
+CAM_API uint32_t CAM_CALL Cam_GetBatchPointCount(CameraHandle handle, uint16_t sensorId);
+
+// 获取最近一次批处理的数据宽度（每行点数，Cam_ReceiveBatchData 成功后调用）。
+CAM_API uint32_t CAM_CALL Cam_GetBatchDataWidth(CameraHandle handle, uint16_t sensorId);
+
+// 获取批处理原始数据（所有帧数据按行顺序拼接，Cam_ReceiveBatchData 成功后调用）。
+// 总大小 = pointCount × dataWidth × 每点字节数（由 dataType 决定）。
+// pDataBuf : 调用方分配的缓冲区
+// bufSize  : 缓冲区大小（字节），须 ≥ 总数据大小，否则返回 CAM_ERR_BUFFER_TOO_SMALL
+CAM_API CamError CAM_CALL Cam_GetBatchData(CameraHandle handle, uint16_t sensorId,
+                                           void* pDataBuf, uint32_t bufSize);
+
+// [异步] 请求批处理数据。结果通过 CommandResultCallback 通知。
+// 命令发送完成即可返回 CAM_PENDING，ACK / 超时后回调。
+CAM_API CamError CAM_CALL Cam_RequestBatchDataAsync(CameraHandle handle, uint16_t sensorId,
+                                                    uint32_t timeoutMs, CommandResultCallback callback,
+                                                    void* pUserData);
 
 // ── 5.12 异步 API（非阻塞）─────────────────────────────────────────────
 
@@ -392,7 +461,7 @@ CAM_API CamError CAM_CALL Cam_StartBatchAsync(CameraHandle handle, uint16_t sens
                                               uint32_t timeoutMs, CommandResultCallback callback,
                                               void* pUserData);
 
-// [异步] 停止批处理采集
+// [异步] 暂停批处理采集
 CAM_API CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t sensorId,
                                              uint32_t timeoutMs, CommandResultCallback callback,
                                              void* pUserData);
@@ -401,6 +470,29 @@ CAM_API CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t senso
 CAM_API CamError CAM_CALL Cam_ResetBufferAsync(CameraHandle handle, uint16_t sensorId,
                                                uint32_t timeoutMs, CommandResultCallback callback,
                                                void* pUserData);
+
+// ── 5.12b 按类型获取单帧（异步，非阻塞）───────────────────────────────────
+
+// 以下所有 Async 帧 API：
+//   - 调用后立即返回 CAM_PENDING（不等待帧到达），结果通过 AsyncFrameCallback 通知。
+//   - timeoutMs 指定本次等待的超时时间（毫秒），超时后回调收到 CAM_ERR_TIMEOUT。
+//   - 匹配成功时回调收到 CAM_OK + 帧数据；回调执行一次后自动注销。
+//   - 回调在 SDK 内部线程执行，不要在回调中调用 Cam_CloseDevice 或 Cam_Finalize。
+
+// [异步] 获取一帧图像数据（PIXEL_FMT_MONO8）。
+CAM_API CamError CAM_CALL Cam_GetImageAsync(CameraHandle handle, uint16_t sensorId,
+                                            uint32_t timeoutMs, AsyncFrameCallback callback,
+                                            void* pUserData);
+
+// [异步] 获取一帧中心线数据（PIXEL_FMT_CENTERLINE_F32）。
+CAM_API CamError CAM_CALL Cam_GetCenterlineAsync(CameraHandle handle, uint16_t sensorId,
+                                                 uint32_t timeoutMs, AsyncFrameCallback callback,
+                                                 void* pUserData);
+
+// [异步] 获取一帧 3D 点云数据（PIXEL_FMT_POINTCLOUD_XYZ）。
+CAM_API CamError CAM_CALL Cam_GetPointCloudAsync(CameraHandle handle, uint16_t sensorId,
+                                                 uint32_t timeoutMs, AsyncFrameCallback callback,
+                                                 void* pUserData);
 
 // =========================================================================
 // 6. 典型调用流程

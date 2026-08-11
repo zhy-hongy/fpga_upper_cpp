@@ -20,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "photon_camera.h"
 
@@ -66,6 +67,8 @@ static void check(const char* name, bool ok, const std::string& detail = "") {
 }
 
 // ── UDP 模式：测试所有 SDK API ──────────────────────────────────────────
+
+static void run_async_timeout_tests(CameraHandle h);
 
 static void run_udp_tests(CameraHandle h) {
     std::printf("\n--- UDP 通讯测试：同步 API ---\n\n");
@@ -294,6 +297,117 @@ static void run_udp_tests(CameraHandle h) {
         check("Async StopCapture result=CAM_OK", ar.result == CAM_OK,
               "result=" + std::to_string(ar.result));
     }
+
+    // ── 异步超时测试 ──
+    run_async_timeout_tests(h);
+}
+
+// ── 异步超时测试（模拟 FPGA 无应答）───────────────────────────────────────
+
+static void run_async_timeout_tests(CameraHandle h) {
+    std::printf("\n--- UDP 通讯测试：异步超时（无 ACK） ---\n\n");
+    std::printf("!!! 请立即停止 UDP 模拟器 (Ctrl+C)，然后按 Enter 继续...\n");
+    std::getchar();
+
+    std::printf("模拟器已停止，开始超时测试...\n\n");
+
+    // ── 测试 1: 单子命令超时（StopCapture 只有 1 条子命令）──
+    {
+        AsyncResult ar;
+        CamError e = Cam_StopCaptureAsync(h, 1, 1000, on_async, &ar);
+        check("Async StopCapture 返回 CAM_PENDING", e == CAM_PENDING,
+              "-> " + std::to_string(e));
+
+        bool got = wait_async(ar, 3000);
+        check("Async StopCapture 超时回调被触发", got,
+              "done=" + std::to_string(got));
+        check("Async StopCapture 超时结果 = CAM_ERR_TIMEOUT",
+              ar.result == CAM_ERR_TIMEOUT,
+              "result=" + std::to_string(ar.result) + " (expected " + std::to_string(CAM_ERR_TIMEOUT) + ")");
+        check("Async StopCapture commandId 非零", ar.commandId != 0,
+              "commandId=" + std::to_string(ar.commandId));
+    }
+
+    // ── 测试 2: 多子命令超时（SetSensorConfig 有 4 条子命令）──
+    {
+        AsyncResult ar;
+        SensorConfig cfg{};
+        cfg.exposureTime  = 9999;
+        cfg.gain          = 999;
+        cfg.exposureDelay = 99;
+        cfg.sampleRate    = 999;
+
+        CamError e = Cam_SetSensorConfigAsync(h, 1, &cfg, 1000, on_async, &ar);
+        check("Async SetSensorConfig 返回 CAM_PENDING", e == CAM_PENDING,
+              "-> " + std::to_string(e));
+
+        bool got = wait_async(ar, 3000);
+        check("Async SetSensorConfig 超时回调被触发", got);
+        check("Async SetSensorConfig 超时结果 = CAM_ERR_TIMEOUT",
+              ar.result == CAM_ERR_TIMEOUT,
+              "result=" + std::to_string(ar.result));
+        check("Async SetSensorConfig commandId 非零", ar.commandId != 0,
+              "commandId=" + std::to_string(ar.commandId));
+    }
+
+    // ── 测试 3: 超时后正常命令不受影响（恢复模拟器后验证）──
+    std::printf("\n!!! 请重新启动 UDP 模拟器，然后按 Enter 继续...\n");
+    std::getchar();
+
+    {
+        AsyncResult ar;
+        SensorConfig cfg{};
+        cfg.exposureTime = 100;
+        cfg.gain         = 1;
+        cfg.sampleRate   = 10;
+
+        CamError e = Cam_SetSensorConfigAsync(h, 1, &cfg, 3000, on_async, &ar);
+        check("恢复后 Async SetSensorConfig 返回 CAM_PENDING", e == CAM_PENDING,
+              "-> " + std::to_string(e));
+
+        bool got = wait_async(ar, 5000);
+        check("恢复后 Async ACK 收到", got);
+        check("恢复后 Async 结果 = CAM_OK", ar.result == CAM_OK,
+              "result=" + std::to_string(ar.result));
+    }
+
+    // ── 测试 4: 多命令并发超时（同时发送多个异步命令，全部超时）──
+    std::printf("\n!!! 请再次停止 UDP 模拟器，然后按 Enter 继续...\n");
+    std::getchar();
+
+    {
+        AsyncResult ar1, ar2, ar3;
+        CamError e1 = Cam_StopCaptureAsync(h, 1, 1000, on_async, &ar1);
+        CamError e2 = Cam_StopCaptureAsync(h, 2, 1000, on_async, &ar2);
+        CamError e3 = Cam_StopCaptureAsync(h, 3, 1000, on_async, &ar3);
+
+        check("并发 StopCapture(1) 返回 CAM_PENDING", e1 == CAM_PENDING);
+        check("并发 StopCapture(2) 返回 CAM_PENDING", e2 == CAM_PENDING);
+        check("并发 StopCapture(3) 返回 CAM_PENDING", e3 == CAM_PENDING);
+
+        bool got1 = wait_async(ar1, 3000);
+        bool got2 = wait_async(ar2, 3000);
+        bool got3 = wait_async(ar3, 3000);
+
+        check("并发 StopCapture(1) 超时回调触发", got1);
+        check("并发 StopCapture(1) 超时 = CAM_ERR_TIMEOUT", ar1.result == CAM_ERR_TIMEOUT);
+        check("并发 StopCapture(2) 超时回调触发", got2);
+        check("并发 StopCapture(2) 超时 = CAM_ERR_TIMEOUT", ar2.result == CAM_ERR_TIMEOUT);
+        check("并发 StopCapture(3) 超时回调触发", got3);
+        check("并发 StopCapture(3) 超时 = CAM_ERR_TIMEOUT", ar3.result == CAM_ERR_TIMEOUT);
+
+        // 三个 commandId 应互不相同
+        check("并发 commandId 互不相同",
+              ar1.commandId != ar2.commandId &&
+              ar2.commandId != ar3.commandId &&
+              ar1.commandId != ar3.commandId,
+              "id1=" + std::to_string(ar1.commandId) +
+              " id2=" + std::to_string(ar2.commandId) +
+              " id3=" + std::to_string(ar3.commandId));
+    }
+
+    std::printf("\n!!! 请重新启动 UDP 模拟器以继续后续测试，然后按 Enter...\n");
+    std::getchar();
 }
 
 // ── Mock 模式测试 ────────────────────────────────────────────────────────
@@ -362,6 +476,100 @@ static void run_mock_tests(CameraHandle h) {
         check("StopCaptureAsync ACK result=CAM_OK", stop.result == CAM_OK);
     } else {
         check("StopCaptureAsync ACK received", false);
+    }
+
+    // ── 阻塞批处理接收测试 ──
+    std::printf("\n--- 阻塞批处理接收测试 ---\n\n");
+
+    const uint16_t testSensor = 1;
+    const uint16_t batchLen = 5;   // 小批量便于验证
+    const uint32_t pointWidth = 1280;
+    const uint32_t bytesPerPoint = 12;  // 3 floats (x,y,z)
+
+    // 1) 设置批处理长度
+    {
+        BatchConfig cfg;
+        cfg.length = batchLen;
+        CamError err = Cam_SetBatchConfig(h, testSensor, &cfg);
+        check("SetBatchConfig length=5", err == CAM_OK,
+              "-> err=" + std::to_string(err));
+    }
+
+    // 2) 验证读回
+    {
+        BatchConfig cfg{};
+        CamError err = Cam_GetBatchConfig(h, testSensor, &cfg);
+        check("GetBatchConfig length=5", err == CAM_OK && cfg.length == batchLen,
+              "-> err=" + std::to_string(err) + " length=" + std::to_string(cfg.length));
+    }
+
+    // 3) 阻塞接收批处理数据（含已注册 DataHandler 转发验证）
+    std::printf("  调用 Cam_ReceiveBatchData (sensor=%u, timeout=5000ms)...\n", testSensor);
+    g_frameCount.store(0);  // 重置帧计数，验证原始 handler 仍被调用
+    {
+        CamError err = Cam_ReceiveBatchData(h, testSensor, 5000);
+        check("Cam_ReceiveBatchData -> CAM_OK", err == CAM_OK,
+              "-> err=" + std::to_string(err));
+    }
+
+    // 4) 验证原始 DataHandler 收到了转发帧（batch_accum_handler 转发机制）
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    {
+        int fc = g_frameCount.load();
+        std::printf("  原始 DataHandler 收到 %d 帧 (预期 %d)\n", fc, batchLen);
+        check("原始 DataHandler 收到批处理帧", fc == batchLen,
+              "got=" + std::to_string(fc) + " expected=" + std::to_string(batchLen));
+    }
+
+    // 5) 验证 pointCount
+    {
+        uint32_t pc = Cam_GetBatchPointCount(h, testSensor);
+        check("GetBatchPointCount = 5", pc == batchLen,
+              "got=" + std::to_string(pc));
+    }
+
+    // 6) 验证 dataWidth
+    {
+        uint32_t dw = Cam_GetBatchDataWidth(h, testSensor);
+        check("GetBatchDataWidth = 1280", dw == pointWidth,
+              "got=" + std::to_string(dw));
+    }
+
+    // 7) 验证 GetBatchData 数据完整性
+    {
+        uint32_t expectedSize = batchLen * pointWidth * bytesPerPoint;
+        std::vector<uint8_t> buf(expectedSize);
+        CamError err = Cam_GetBatchData(h, testSensor, buf.data(), expectedSize);
+        check("GetBatchData -> CAM_OK", err == CAM_OK,
+              "-> err=" + std::to_string(err));
+
+        // 验证数据全是 0xAB（Mock 填充值）
+        bool allAB = true;
+        for (uint32_t i = 0; i < expectedSize && allAB; ++i) {
+            if (buf[i] != 0xAB) allAB = false;
+        }
+        check("批处理数据全为 0xAB", allAB,
+              "size=" + std::to_string(expectedSize));
+
+        std::printf("  批处理数据大小: %u 字节 (预期 %u)\n", expectedSize, expectedSize);
+    }
+
+    // 8) 缓冲区不足测试
+    {
+        std::vector<uint8_t> smallBuf(100);
+        CamError err = Cam_GetBatchData(h, testSensor, smallBuf.data(), 100);
+        check("GetBatchData(buf too small) -> CAM_ERR_BUFFER_TOO_SMALL",
+              err == CAM_ERR_BUFFER_TOO_SMALL,
+              "-> err=" + std::to_string(err));
+    }
+
+    // 9) 参数校验
+    {
+        check("GetBatchPointCount(null)", Cam_GetBatchPointCount(nullptr, testSensor) == 0);
+        check("GetBatchDataWidth(null)", Cam_GetBatchDataWidth(nullptr, testSensor) == 0);
+        CamError err = Cam_GetBatchData(nullptr, testSensor, nullptr, 0);
+        check("GetBatchData(null) -> INVALID_HANDLE", err == CAM_ERR_INVALID_HANDLE,
+              "-> err=" + std::to_string(err));
     }
 }
 

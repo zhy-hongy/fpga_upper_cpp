@@ -40,6 +40,7 @@ public:
     CamError start_batch(uint16_t sensorId, uint32_t batchId);
     CamError stop_batch(uint16_t sensorId);
     CamError reset_buffer(uint16_t sensorId);
+    CamError get_batch_data(uint16_t sensorId);
 
     // ---- 异步非阻塞控制 API 转发 ----
     // 立即返回 CAM_PENDING；ACK / 超时后经 CommandResultCallback 在 CommandManager
@@ -68,6 +69,8 @@ public:
                               CommandResultCallback cb, void* userData);
     CamError reset_buffer_async(uint16_t sensorId, uint32_t timeoutMs,
                                 CommandResultCallback cb, void* userData);
+    CamError get_batch_data_async(uint16_t sensorId, uint32_t timeoutMs,
+                                  CommandResultCallback cb, void* userData);
 
 private:
     // ACK 回调类型（与 ProtocolHandler 方法回调签名一致）

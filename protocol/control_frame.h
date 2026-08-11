@@ -50,6 +50,12 @@ constexpr int CMD_REMOTE_UPDATE_CONTROL = 0x0021;
 constexpr int CMD_REMOTE_UPDATE_DATA = 0x0022;
 constexpr int CMD_REMOTE_UPDATE_RESULT = 0x0023;
 
+// 数据帧类型（FPGA 通过 cmd_code 区分上行数据帧类型，供 frame_to_info 自动识别 PixelFormat）
+// 注意：这些值是 FPGA 固件协议约定的，如需修改请与 FPGA 固件保持一致。
+constexpr int CMD_DATA_IMAGE_2D   = 0x0301;  // 2D 灰度图 (PIXEL_FMT_MONO8)
+constexpr int CMD_DATA_CENTERLINE = 0x0302;  // 激光中心线 (PIXEL_FMT_CENTERLINE_F32)
+constexpr int CMD_DATA_POINTCLOUD = 0x0303;  // 3D 点云 (PIXEL_FMT_POINTCLOUD_XYZ)
+
 constexpr uint8_t UPDATE_CTRL_START = 0x01;
 constexpr uint8_t UPDATE_CTRL_ABORT = 0x00;
 

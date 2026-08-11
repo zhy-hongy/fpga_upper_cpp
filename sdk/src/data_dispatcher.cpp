@@ -48,6 +48,43 @@ bool DataDispatcher::wait_latest(uint16_t sensorId, FramePacket* out, int timeou
     return true;
 }
 
+bool DataDispatcher::wait_latest_type(uint16_t sensorId, PixelFormat targetType,
+                                      FramePacket* out, int timeoutMs) {
+    QMutexLocker lock(&m_mutex);
+
+    // 辅助 lambda：检查是否存在匹配 sensorId 且 PixelFormat 正确的帧
+    auto find_match = [&]() -> QHash<uint16_t, FramePacket>::const_iterator {
+        auto it = m_latest.constFind(sensorId);
+        if (it != m_latest.constEnd() &&
+            cmd_to_pixel_format(it->cmd_code) == targetType) {
+            return it;
+        }
+        return m_latest.constEnd();
+    };
+
+    auto it = find_match();
+    if (it != m_latest.constEnd()) {
+        if (out) *out = it.value();
+        return true;
+    }
+
+    QDeadlineTimer deadline(timeoutMs);
+    while (true) {
+        if (deadline.hasExpired()) return false;
+        qint64 rem = deadline.remainingTime();
+        if (rem < 0)
+            m_cv.wait(&m_mutex);                       // 无限等待
+        else
+            m_cv.wait(&m_mutex, static_cast<unsigned long>(rem));
+
+        it = find_match();                             // 唤醒后重新检查（防伪唤醒 + 类型匹配）
+        if (it != m_latest.constEnd()) {
+            if (out) *out = it.value();
+            return true;
+        }
+    }
+}
+
 bool DataDispatcher::pop(FramePacket* out) {
     QMutexLocker lock(&m_mutex);
     if (m_queue.isEmpty()) return false;

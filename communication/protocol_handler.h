@@ -42,8 +42,8 @@ public:
     void stop_all();
     void set_network_params(const QString& target_host, int target_port, int local_port);
 
-    // ×èÈûµÈ´ı UDPWorker ºÍ UDPDataThread µÄÊÂ¼şÑ­»·È«²¿¾ÍĞ÷£¨ÓĞ½ç³¬Ê±£©¡£
-    // ÔÚ start_all() Ö®ºóµ÷ÓÃ£¬È·±£×ÓÏß³ÌµÄ QUdpSocket ÒÑ°ó¶¨ÇÒÊÂ¼şÑ­»·ÒÑÆô¶¯¡£
+    // é˜»å¡ç­‰å¾… UDPWorker å’Œ UDPDataThread çš„äº‹ä»¶å¾ªç¯å…¨éƒ¨å°±ç»ªï¼ˆæœ‰ç•Œè¶…æ—¶ï¼‰ã€‚
+    // åœ¨ start_all() ä¹‹åè°ƒç”¨ï¼Œç¡®ä¿å­çº¿ç¨‹çš„ QUdpSocket å·²ç»‘å®šä¸”äº‹ä»¶å¾ªç¯å·²å¯åŠ¨ã€‚
     virtual void wait_all_ready(int timeoutMs = 10000);
 
     // Frame queue access
@@ -52,8 +52,8 @@ public:
     int last_pkt_id() const;
 
     // High-level API - Camera controls
-    // ÕâĞ©·½·¨ÉùÃ÷Îª virtual£ºSDK µÄ ProtocolAdapter ÒÔ ProtocolHandler* µ÷ÓÃËüÃÇ£¬
-    // Mock ²âÊÔ×ÓÀàĞèÒª¸²¸ÇÒÔÁ¢¼´·µ»Ø³É¹¦ ACK£¨ÕæÊµÄ£Ê½ÎŞ×ÓÀà£¬virtual µÈ¼Û¾²Ì¬°ó¶¨£©¡£
+    // è¿™äº›æ–¹æ³•å£°æ˜ä¸º virtualï¼šSDK çš„ ProtocolAdapter ä»¥ ProtocolHandler* è°ƒç”¨å®ƒä»¬ï¼Œ
+    // Mock æµ‹è¯•å­ç±»éœ€è¦è¦†ç›–ä»¥ç«‹å³è¿”å›æˆåŠŸ ACKï¼ˆçœŸå®æ¨¡å¼æ— å­ç±»ï¼Œvirtual ç­‰ä»·é™æ€ç»‘å®šï¼‰ã€‚
     virtual void set_exposure(int us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
@@ -73,7 +73,7 @@ public:
     virtual void read_encoder_interval(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
@@ -86,10 +86,10 @@ public:
                            std::function<void()> error_callback = nullptr);
 
 protected:
-    // ´ò°üÒ»Ìõ¿ØÖÆÃüÁîÖ¡£¨aa55 Ğ­ÒéÖ¡£¬º¬ÄÚ²ã CRC£©£¬²»·¢ËÍ¡¢²»µÇ¼Ç pending¡£
-    // Óë send_cmd µÄ´ò°üÂß¼­ÍêÈ«Ò»ÖÂ£¨ÏàÍ¬ device_type / msg_id / ÄÚ²ã CRC£©¡£
-    // Éú³ÉµÄ msg_id Í¨¹ı out_msg_id ·µ»Ø£¨¿É¿Õ£©¡£
-    // ¹© MockProtocolHandler ÔÚÑéÖ¤"µ÷ÓÃºóÊÇ·ñ·¢ËÍÁË¶ÔÓ¦Ğ­ÒéÃüÁî"Ê±¸´ÓÃÍ¬Ò»´ò°üÂ·¾¶¡£
+    // æ‰“åŒ…ä¸€æ¡æ§åˆ¶å‘½ä»¤å¸§ï¼ˆaa55 åè®®å¸§ï¼Œå«å†…å±‚ CRCï¼‰ï¼Œä¸å‘é€ã€ä¸ç™»è®° pendingã€‚
+    // ä¸ send_cmd çš„æ‰“åŒ…é€»è¾‘å®Œå…¨ä¸€è‡´ï¼ˆç›¸åŒ device_type / msg_id / å†…å±‚ CRCï¼‰ã€‚
+    // ç”Ÿæˆçš„ msg_id é€šè¿‡ out_msg_id è¿”å›ï¼ˆå¯ç©ºï¼‰ã€‚
+    // ä¾› MockProtocolHandler åœ¨éªŒè¯"è°ƒç”¨åæ˜¯å¦å‘é€äº†å¯¹åº”åè®®å‘½ä»¤"æ—¶å¤ç”¨åŒä¸€æ‰“åŒ…è·¯å¾„ã€‚
     QByteArray build_command_frame(int cmd_code, int rw, const QByteArray& data,
                                    int sensor_id, int* out_msg_id = nullptr);
 
@@ -147,7 +147,7 @@ private:
     std::mt19937 m_rng;
     bool m_is_destroying = false;
 
-    // ×ÓÏß³Ì¾ÍĞ÷±êÖ¾£¨ÓÉ sig_ready ĞÅºÅÇı¶¯£¬wait_all_ready Ïû·Ñ£©
+    // å­çº¿ç¨‹å°±ç»ªæ ‡å¿—ï¼ˆç”± sig_ready ä¿¡å·é©±åŠ¨ï¼Œwait_all_ready æ¶ˆè´¹ï¼‰
     std::atomic<bool> m_ctrl_ready{false};
     std::atomic<bool> m_data_ready{false};
 };

@@ -14,6 +14,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -48,6 +49,7 @@ struct AsyncResult {
     std::condition_variable cv;
     bool done = false;
     CamError result = CAM_ERR_UNKNOWN;
+    uint16_t commandId = 0;
 };
 
 static void CAM_CALL on_async_ack(CamError result, uint16_t /*commandId*/, void* userData) {
@@ -63,6 +65,21 @@ static bool wait_async(AsyncResult& r, int timeoutMs) {
     return r.cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&] { return r.done; });
 }
 
+// 带日志记录的异步回调（供超时测试使用）
+struct AsyncResultWithLog : AsyncResult {
+    // on_result 回调在 CommandManager 线程调用，不直接访问 GUI。
+    // 日志由 poll timer 在主线程检测到 done 后统一输出。
+};
+
+static void CAM_CALL on_async_with_log(CamError result, uint16_t commandId, void* userData) {
+    auto* r = static_cast<AsyncResultWithLog*>(userData);
+    std::lock_guard<std::mutex> lock(r->mutex);
+    r->result = result;
+    r->commandId = commandId;
+    r->done = true;
+    r->cv.notify_all();
+}
+
 // =========================================================================
 // 主窗口
 // =========================================================================
@@ -70,7 +87,7 @@ class MainWindow : public QWidget {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr) : QWidget(parent) {
-        setWindowTitle("PhotonCamera SDK 测试工具");
+        setWindowTitle("CameraSDK 测试工具");
         resize(900, 700);
         build_ui();
         update_ui_state(false);
@@ -291,6 +308,223 @@ private slots:
         update_batch_read_display();
     }
 
+    // ── 异步超时测试 ──
+    void on_timeout_single() {
+        if (!m_handle) { log("错误: 请先打开设备", true); return; }
+        log("═══════════════════════════════════════", false);
+        log("[超时测试] 测试 1: 单子命令超时 (StopCapture)");
+        log("[超时测试] 提示: 请先在另一个终端停止 UDP 模拟器 (Ctrl+C)", false);
+        const int timeoutMs = m_timeoutSpin->value();
+
+        auto* ar = new AsyncResultWithLog();
+
+        const uint16_t sid = sensor_id();
+        log_with_time(QString("[发送] StopCaptureAsync sensor=%1 timeout=%2ms").arg(sid).arg(timeoutMs));
+        CamError e = Cam_StopCaptureAsync(m_handle, sid, static_cast<uint32_t>(timeoutMs),
+                                          on_async_with_log, ar);
+        log_with_time(QString("[返回] Cam_StopCaptureAsync -> %1 (expected CAM_PENDING=%2)")
+            .arg(e).arg(CAM_PENDING));
+
+        // 使用 QTimer 轮询等待结果（不阻塞 UI）。所有日志在 poll timer 回调中输出，
+        // 确保 GUI 操作在主线程执行，避免 CommandManager 回调线程的跨线程 GUI 访问崩溃。
+        auto* pollTimer = new QTimer(this);
+        auto startTime = std::chrono::steady_clock::now();
+        pollTimer->callOnTimeout([this, ar, pollTimer, startTime]() {
+            CamError r = CAM_ERR_UNKNOWN;
+            uint16_t cid = 0;
+            bool done = false;
+            {
+                std::lock_guard<std::mutex> lock(ar->mutex);
+                done = ar->done;
+                r = ar->result;
+                cid = ar->commandId;
+            }
+            if (done) {
+                pollTimer->stop();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime).count();
+                log_with_time(QString("[超时回调] commandId=%1 result=%2 (%3)")
+                    .arg(cid).arg(r).arg(r == CAM_ERR_TIMEOUT ? "TIMEOUT" : "OK"));
+                log_with_time(QString("[结果] 回调触发耗时=%1ms").arg(elapsed));
+                bool pass = (r == CAM_ERR_TIMEOUT && cid != 0);
+                log(pass ? "[PASS] 单命令超时: result=CAM_ERR_TIMEOUT, commandId 非零"
+                         : "[FAIL] 单命令超时验证失败", !pass);
+                pollTimer->deleteLater();
+                delete ar;
+            }
+        });
+        pollTimer->start(100);
+    }
+
+    void on_timeout_multi() {
+        if (!m_handle) { log("错误: 请先打开设备", true); return; }
+        log("═══════════════════════════════════════", false);
+        log("[超时测试] 测试 2: 多子命令超时 (SetSensorConfig x4)");
+        log("[超时测试] 提示: 请先在另一个终端停止 UDP 模拟器 (Ctrl+C)", false);
+        const int timeoutMs = m_timeoutSpin->value();
+
+        auto* ar = new AsyncResultWithLog();
+
+        SensorConfig cfg{};
+        cfg.exposureTime  = 9999;
+        cfg.gain          = 999;
+        cfg.exposureDelay = 99;
+        cfg.sampleRate    = 999;
+
+        uint16_t sid = sensor_id();
+        log_with_time(QString("[发送] SetSensorConfigAsync sensor=%1 exp=%2 gain=%3 delay=%4 rate=%5 timeout=%6ms")
+            .arg(sid).arg(cfg.exposureTime).arg(cfg.gain)
+            .arg(cfg.exposureDelay).arg(cfg.sampleRate).arg(timeoutMs));
+        log_with_time("[状态] SetSensorConfig 内部会发送 4 条子命令 (exposure/gain/delay/rate)，"
+                      "每条都绑定独立的 ACK 回调，4 条全部超时后才触发最终 CAM_ERR_TIMEOUT");
+
+        CamError e = Cam_SetSensorConfigAsync(m_handle, sid, &cfg, static_cast<uint32_t>(timeoutMs),
+                                              on_async_with_log, ar);
+        log_with_time(QString("[返回] Cam_SetSensorConfigAsync -> %1 (expected CAM_PENDING=%2)")
+            .arg(e).arg(CAM_PENDING));
+
+        auto* pollTimer = new QTimer(this);
+        auto startTime = std::chrono::steady_clock::now();
+        pollTimer->callOnTimeout([this, ar, pollTimer, startTime]() {
+            CamError r = CAM_ERR_UNKNOWN;
+            uint16_t cid = 0;
+            bool done = false;
+            {
+                std::lock_guard<std::mutex> lock(ar->mutex);
+                done = ar->done;
+                r = ar->result;
+                cid = ar->commandId;
+            }
+            if (done) {
+                pollTimer->stop();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime).count();
+                log_with_time(QString("[超时回调] commandId=%1 result=%2 (%3)")
+                    .arg(cid).arg(r).arg(r == CAM_ERR_TIMEOUT ? "TIMEOUT" : "OK"));
+                log_with_time(QString("[结果] 回调触发耗时=%1ms").arg(elapsed));
+                bool pass = (r == CAM_ERR_TIMEOUT && cid != 0);
+                log(pass ? "[PASS] 多命令超时: 4 条子命令全部超时，最终 CAM_ERR_TIMEOUT"
+                         : "[FAIL] 多命令超时验证失败", !pass);
+                pollTimer->deleteLater();
+                delete ar;
+            }
+        });
+        pollTimer->start(100);
+    }
+
+    void on_timeout_concurrent() {
+        if (!m_handle) { log("错误: 请先打开设备", true); return; }
+        log("═══════════════════════════════════════", false);
+        log("[超时测试] 测试 3: 多命令并发超时 (3x StopCapture)");
+        log("[超时测试] 提示: 请先在另一个终端停止 UDP 模拟器 (Ctrl+C)", false);
+        const int timeoutMs = m_timeoutSpin->value();
+
+        struct Context {
+            AsyncResultWithLog ar[3];
+            int doneCount = 0;
+        };
+        auto* ctx = new Context();
+
+        log_with_time(QString("[并发] 同时发送 3 个 StopCaptureAsync sensor=1,2,3 timeout=%1ms").arg(timeoutMs));
+
+        CamError e1 = Cam_StopCaptureAsync(m_handle, 1, static_cast<uint32_t>(timeoutMs),
+                                           on_async_with_log, &ctx->ar[0]);
+        CamError e2 = Cam_StopCaptureAsync(m_handle, 2, static_cast<uint32_t>(timeoutMs),
+                                           on_async_with_log, &ctx->ar[1]);
+        CamError e3 = Cam_StopCaptureAsync(m_handle, 3, static_cast<uint32_t>(timeoutMs),
+                                           on_async_with_log, &ctx->ar[2]);
+
+        log_with_time(QString("[返回] sensor1=%1 sensor2=%2 sensor3=%3 (expected all CAM_PENDING=%4)")
+            .arg(e1).arg(e2).arg(e3).arg(CAM_PENDING));
+
+        auto* pollTimer = new QTimer(this);
+        auto startTime = std::chrono::steady_clock::now();
+        pollTimer->callOnTimeout([this, ctx, pollTimer, startTime]() {
+            int done = 0;
+            for (int i = 0; i < 3; i++) {
+                std::lock_guard<std::mutex> lock(ctx->ar[i].mutex);
+                if (ctx->ar[i].done) done++;
+            }
+            if (done == 3) {
+                pollTimer->stop();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime).count();
+                log_with_time(QString("[结果] 3 个回调全部触发 耗时=%1ms").arg(elapsed));
+
+                bool allTimeout = true;
+                bool allIdNonZero = true;
+                bool allIdUnique = (ctx->ar[0].commandId != ctx->ar[1].commandId &&
+                                    ctx->ar[1].commandId != ctx->ar[2].commandId &&
+                                    ctx->ar[0].commandId != ctx->ar[2].commandId);
+                for (int i = 0; i < 3; i++) {
+                    if (ctx->ar[i].result != CAM_ERR_TIMEOUT) allTimeout = false;
+                    if (ctx->ar[i].commandId == 0) allIdNonZero = false;
+                    log_with_time(QString("  [超时回调#%1] commandId=%2 result=%3 (%4)")
+                        .arg(i + 1).arg(ctx->ar[i].commandId).arg(ctx->ar[i].result)
+                        .arg(ctx->ar[i].result == CAM_ERR_TIMEOUT ? "TIMEOUT" : "OK"));
+                }
+
+                log(allTimeout ? "[PASS] 并发超时: 3 个 commandId 全部返回 CAM_ERR_TIMEOUT"
+                               : "[FAIL] 并非全部超时", !allTimeout);
+                log(allIdUnique ? "[PASS] 并发超时: 3 个 commandId 互不相同"
+                                : "[FAIL] commandId 存在重复", !allIdUnique);
+                pollTimer->deleteLater();
+                delete ctx;
+            }
+        });
+        pollTimer->start(100);
+    }
+
+    void on_timeout_recovery() {
+        if (!m_handle) { log("错误: 请先打开设备", true); return; }
+        log("═══════════════════════════════════════", false);
+        log("[超时测试] 测试 4: 超时后恢复验证");
+        log("[超时测试] 提示: 请先在另一个终端重新启动 UDP 模拟器", false);
+
+        auto* ar = new AsyncResultWithLog();
+
+        SensorConfig cfg{};
+        cfg.exposureTime = 100;
+        cfg.gain         = 1;
+        cfg.sampleRate   = 10;
+
+        uint16_t sid = sensor_id();
+        log_with_time(QString("[发送] SetSensorConfigAsync sensor=%1 (恢复测试)").arg(sid));
+
+        CamError e = Cam_SetSensorConfigAsync(m_handle, sid, &cfg, 3000,
+                                              on_async_with_log, ar);
+        log_with_time(QString("[返回] Cam_SetSensorConfigAsync -> %1 (expected CAM_PENDING=%2)")
+            .arg(e).arg(CAM_PENDING));
+
+        auto* pollTimer = new QTimer(this);
+        auto startTime = std::chrono::steady_clock::now();
+        pollTimer->callOnTimeout([this, ar, pollTimer, startTime]() {
+            CamError r = CAM_ERR_UNKNOWN;
+            uint16_t cid = 0;
+            bool done = false;
+            {
+                std::lock_guard<std::mutex> lock(ar->mutex);
+                done = ar->done;
+                r = ar->result;
+                cid = ar->commandId;
+            }
+            if (done) {
+                pollTimer->stop();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime).count();
+                log_with_time(QString("[恢复回调] commandId=%1 result=%2 (%3)")
+                    .arg(cid).arg(r).arg(r == CAM_OK ? "OK" : "TIMEOUT"));
+                log_with_time(QString("[结果] 恢复回调耗时=%1ms").arg(elapsed));
+                bool pass = (r == CAM_OK);
+                log(pass ? "[PASS] 超时后恢复: 新命令正常返回 CAM_OK，CommandManager 状态未被污染"
+                         : "[FAIL] 超时后恢复失败", !pass);
+                pollTimer->deleteLater();
+                delete ar;
+            }
+        });
+        pollTimer->start(100);
+    }
+
 private:
     // ── 辅助 ──
     uint16_t sensor_id() const {
@@ -302,6 +536,11 @@ private:
         m_logEdit->appendPlainText(prefix + msg);
     }
 
+    void log_with_time(const QString& msg) {
+        QString ts = QDateTime::currentDateTime().toString("hh:mm:ss.zzz");
+        m_logEdit->appendPlainText(QString("[%1] %2").arg(ts, msg));
+    }
+
     void update_ui_state(bool opened) {
         m_openBtn->setEnabled(!opened);
         m_closeBtn->setEnabled(opened);
@@ -309,6 +548,7 @@ private:
         m_triggerCfgBox->setEnabled(opened);
         m_batchCfgBox->setEnabled(opened);
         m_captureBox->setEnabled(opened);
+        m_timeoutBox->setEnabled(opened);
         m_ipEdit->setEnabled(!opened);
         m_ctrlPortSpin->setEnabled(!opened);
         m_dataPortSpin->setEnabled(!opened);
@@ -555,6 +795,36 @@ private:
         capLayout->addStretch();
         mainLayout->addWidget(m_captureBox);
 
+        // ── 异步超时测试 ──
+        m_timeoutBox = new QGroupBox("异步超时测试 (需配合停止/启动 UDP 模拟器)");
+        auto* timeoutLayout = new QGridLayout(m_timeoutBox);
+        timeoutLayout->addWidget(new QLabel("超时阈值 (ms):"), 0, 0);
+        m_timeoutSpin = new QSpinBox();
+        m_timeoutSpin->setRange(200, 10000);
+        m_timeoutSpin->setValue(1000);
+        m_timeoutSpin->setToolTip("异步命令等待 ACK 的超时时间，超时后 CommandManager 回调 CAM_ERR_TIMEOUT");
+        timeoutLayout->addWidget(m_timeoutSpin, 0, 1);
+        timeoutLayout->addWidget(new QLabel(""), 0, 2);
+        timeoutLayout->addWidget(new QLabel(""), 0, 3);
+
+        auto* timeoutBtnLayout = new QHBoxLayout();
+        auto* timeoutSingleBtn = new QPushButton("单命令超时");
+        timeoutSingleBtn->setToolTip("发送 StopCaptureAsync，模拟器无应答 → 验证 CAM_ERR_TIMEOUT");
+        auto* timeoutMultiBtn = new QPushButton("多命令超时");
+        timeoutMultiBtn->setToolTip("发送 SetSensorConfigAsync (4 条子命令)，全部无应答 → 验证聚合超时");
+        auto* timeoutConcurrentBtn = new QPushButton("并发超时");
+        timeoutConcurrentBtn->setToolTip("同时发送 3 个 StopCaptureAsync，全部超时 → 验证 commandId 唯一性");
+        auto* timeoutRecoveryBtn = new QPushButton("超时后恢复");
+        timeoutRecoveryBtn->setToolTip("重新启动模拟器后发送正常命令 → 验证 CAM_OK，CommandManager 状态未被污染");
+
+        timeoutBtnLayout->addWidget(timeoutSingleBtn);
+        timeoutBtnLayout->addWidget(timeoutMultiBtn);
+        timeoutBtnLayout->addWidget(timeoutConcurrentBtn);
+        timeoutBtnLayout->addWidget(timeoutRecoveryBtn);
+        timeoutLayout->addLayout(timeoutBtnLayout, 1, 0, 1, 4);
+
+        mainLayout->addWidget(m_timeoutBox);
+
         // ── 对比显示区域（写入值 vs 回读值） ──
         auto* compareBox = new QGroupBox("写入值 vs 回读值对比");
         auto* compareLayout = new QGridLayout(compareBox);
@@ -635,10 +905,14 @@ private:
         connect(m_allBtn, &QPushButton::clicked, this, &MainWindow::on_write_and_read_all);
         connect(startCapBtn, &QPushButton::clicked, this, &MainWindow::on_start_capture);
         connect(stopCapBtn, &QPushButton::clicked, this, &MainWindow::on_stop_capture);
+        connect(timeoutSingleBtn, &QPushButton::clicked, this, &MainWindow::on_timeout_single);
+        connect(timeoutMultiBtn, &QPushButton::clicked, this, &MainWindow::on_timeout_multi);
+        connect(timeoutConcurrentBtn, &QPushButton::clicked, this, &MainWindow::on_timeout_concurrent);
+        connect(timeoutRecoveryBtn, &QPushButton::clicked, this, &MainWindow::on_timeout_recovery);
         connect(m_sensorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &MainWindow::on_sensor_changed);
 
-        log("PhotonCamera SDK 测试工具已启动");
+        log("CameraSDK 测试工具已启动");
         log(QString::fromUtf8("请设置连接参数，点击 [打开设备] 开始测试"));
     }
 
@@ -661,6 +935,7 @@ private:
     QGroupBox* m_triggerCfgBox = nullptr;
     QGroupBox* m_batchCfgBox = nullptr;
     QGroupBox* m_captureBox = nullptr;
+    QGroupBox* m_timeoutBox = nullptr;
 
     // Sensor 配置输入
     QSpinBox* m_expSpin = nullptr;
@@ -677,6 +952,9 @@ private:
 
     // 批处理配置输入
     QSpinBox* m_batchLenSpin = nullptr;
+
+    // 超时测试
+    QSpinBox* m_timeoutSpin = nullptr;
 
     // 对比显示 (Sensor)
     QLabel* m_sensorWrittenLabel = nullptr;

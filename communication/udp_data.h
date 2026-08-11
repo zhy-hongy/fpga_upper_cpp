@@ -28,6 +28,7 @@ struct SensorAssembly {
     int image_width = 1280;
     int image_height = 720;
     int expected_packets = 720;
+    uint16_t cmd_code = 0;  // FPGA 命令码，用于 frame_to_info 识别数据类型
 
     void reset() {
         packets.clear();

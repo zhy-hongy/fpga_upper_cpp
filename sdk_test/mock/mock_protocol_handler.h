@@ -11,42 +11,42 @@
 #include "communication/protocol_handler.h"
 #include "sdk/src/frame_packet.h"
 
-// MockProtocolHandler£ºÎŞ FPGA »·¾³ÏÂµÄ SDK ¿ØÖÆ + Êı¾İÁ´Â·ÑéÖ¤ Mock£¨½ö sdk_test Ê¹ÓÃ£©¡£
+// MockProtocolHandlerï¼šæ—  FPGA ç¯å¢ƒä¸‹çš„ SDK æ§åˆ¶ + æ•°æ®é“¾è·¯éªŒè¯ Mockï¼ˆä»… sdk_test ä½¿ç”¨ï¼‰ã€‚
 //
-// ¼Ü¹¹Ô¼Êø£¨ÓÃ»§¾ö²ß£ºÖ»·Å¿í"ProtocolHandler ¿ØÖÆ·½·¨ virtual"£¬ÆäÓà²»¶¯£©£º
-//   - ¼Ì³ĞÕæÊµ ProtocolHandler£¬µ«»ùÀà¡¾²» start_all()¡¿¡ú UDPWorker/UDPDataThread
-//     Ïß³Ì²»Æô¶¯¡¢²» bind¡¢²» new QUdpSocket ¡ú ²»²úÉúÈÎºÎ UDP »î¶¯¡£
-//   - ¿ØÖÆÃüÁî£ºProtocolAdapter ÒÔ ProtocolHandler* µ÷ÓÃ¡¾virtual¡¿¿ØÖÆ·½·¨£¬
-//     ĞéÄâ·Ö·¢µ½±¾ÀàµÄ¸²¸ÇÊµÏÖ ¡ú Á¢¼´»Øµ÷³É¹¦ ACK£¨Ğ´ÃüÁî£©»ò·µ»ØÄ¬ÈÏ²âÊÔÊı¾İ
-//     £¨¶ÁÃüÁî£¬Êı¾İ°´ adapter µÄ be32/be16 ½âÎö±àÂë£©¡£Òò´Ë Mock Ä£Ê½ÏÂËùÓĞ
-//     ¿ØÖÆ C API ¾ùÁ¢¼´·µ»Ø CAM_OK£¨<100ms£©£¬ÎŞĞè UDP¡¢ÎŞ³¬Ê±µÈ´ı¡£
-//   - ·¢ËÍÃüÁîÑéÖ¤£ºÃ¿¸ö¸²¸Ç·½·¨ÔÚ ACK Ö®Ç°£¬ÓÃ¡¾ÓëÕæÊµ send_cmd ÍêÈ«Ò»ÖÂµÄ´ò°üÂ·¾¶¡¿
-//     £¨ProtocolHandler::build_command_frame + split_into_transport_frames£¬º¬ÄÚ²ã/Íâ²ã
-//     CRC16£©Éú³É±¾´Îµ÷ÓÃ¶ÔÓ¦µÄĞ­ÒéÃüÁîÖ¡£¬²¢¼ÇÂ¼µ½ m_sent_cmds ¹© SDKTest Ğ£Ñé
-//     "µ÷ÓÃºóÊÇ·ñ·¢ËÍÁË¶ÔÓ¦µÄĞ­ÒéÃüÁî"¡£Õâ²»»á²úÉúÈÎºÎ UDP Êı¾İ¡£
-//   - Êı¾İÁ´Â·ÍêÈ«×ß SDK£ºCam_StartCapture ¹ã²¥ ¡ú ±¾Àà start_capture() ¸²¸Ç±»µ÷ÓÃ
-//     ¡ú Æô¶¯ 40ms Ö¡¶¨Ê±Æ÷£¬Ã¿Ö¡ emit frame_ready(FramePacket) ¡ú CameraDevice
-//     (DataDispatcher) ¡ú CallbackWorker ¡ú DataHandler¡£Ö¡À´Ô´×Ö¶Î°´Ô¼Êø±ê×¢
-//     META_SOURCE_SDK / META_SOURCE_UNKNOWN¡£
-//   - ±¾ÀàÖ»ÊôÓÚ²âÊÔ´úÂë£¬²»½øÈëÕıÊ½ SDK¡£
+// æ¶æ„çº¦æŸï¼ˆç”¨æˆ·å†³ç­–ï¼šåªæ”¾å®½"ProtocolHandler æ§åˆ¶æ–¹æ³• virtual"ï¼Œå…¶ä½™ä¸åŠ¨ï¼‰ï¼š
+//   - ç»§æ‰¿çœŸå® ProtocolHandlerï¼Œä½†åŸºç±»ã€ä¸ start_all()ã€‘â†’ UDPWorker/UDPDataThread
+//     çº¿ç¨‹ä¸å¯åŠ¨ã€ä¸ bindã€ä¸ new QUdpSocket â†’ ä¸äº§ç”Ÿä»»ä½• UDP æ´»åŠ¨ã€‚
+//   - æ§åˆ¶å‘½ä»¤ï¼šProtocolAdapter ä»¥ ProtocolHandler* è°ƒç”¨ã€virtualã€‘æ§åˆ¶æ–¹æ³•ï¼Œ
+//     è™šæ‹Ÿåˆ†å‘åˆ°æœ¬ç±»çš„è¦†ç›–å®ç° â†’ ç«‹å³å›è°ƒæˆåŠŸ ACKï¼ˆå†™å‘½ä»¤ï¼‰æˆ–è¿”å›é»˜è®¤æµ‹è¯•æ•°æ®
+//     ï¼ˆè¯»å‘½ä»¤ï¼Œæ•°æ®æŒ‰ adapter çš„ be32/be16 è§£æç¼–ç ï¼‰ã€‚å› æ­¤ Mock æ¨¡å¼ä¸‹æ‰€æœ‰
+//     æ§åˆ¶ C API å‡ç«‹å³è¿”å› CAM_OKï¼ˆ<100msï¼‰ï¼Œæ— éœ€ UDPã€æ— è¶…æ—¶ç­‰å¾…ã€‚
+//   - å‘é€å‘½ä»¤éªŒè¯ï¼šæ¯ä¸ªè¦†ç›–æ–¹æ³•åœ¨ ACK ä¹‹å‰ï¼Œç”¨ã€ä¸çœŸå® send_cmd å®Œå…¨ä¸€è‡´çš„æ‰“åŒ…è·¯å¾„ã€‘
+//     ï¼ˆProtocolHandler::build_command_frame + split_into_transport_framesï¼Œå«å†…å±‚/å¤–å±‚
+//     CRC16ï¼‰ç”Ÿæˆæœ¬æ¬¡è°ƒç”¨å¯¹åº”çš„åè®®å‘½ä»¤å¸§ï¼Œå¹¶è®°å½•åˆ° m_sent_cmds ä¾› SDKTest æ ¡éªŒ
+//     "è°ƒç”¨åæ˜¯å¦å‘é€äº†å¯¹åº”çš„åè®®å‘½ä»¤"ã€‚è¿™ä¸ä¼šäº§ç”Ÿä»»ä½• UDP æ•°æ®ã€‚
+//   - æ•°æ®é“¾è·¯å®Œå…¨èµ° SDKï¼šCam_StartCapture å¹¿æ’­ â†’ æœ¬ç±» start_capture() è¦†ç›–è¢«è°ƒç”¨
+//     â†’ å¯åŠ¨ 40ms å¸§å®šæ—¶å™¨ï¼Œæ¯å¸§ emit frame_ready(FramePacket) â†’ CameraDevice
+//     (DataDispatcher) â†’ CallbackWorker â†’ DataHandlerã€‚å¸§æ¥æºå­—æ®µæŒ‰çº¦æŸæ ‡æ³¨
+//     META_SOURCE_SDK / META_SOURCE_UNKNOWNã€‚
+//   - æœ¬ç±»åªå±äºæµ‹è¯•ä»£ç ï¼Œä¸è¿›å…¥æ­£å¼ SDKã€‚
 
-// Ò»´Î"ÒÑ·¢ËÍ"Ğ­ÒéÃüÁîµÄ¼ÇÂ¼£¨º¬ÍêÕû´«ÊäÖ¡×Ö½Ú£¬ÓÃÓÚ²âÊÔĞ£Ñé CRC/¸ñÊ½£©
+// ä¸€æ¬¡"å·²å‘é€"åè®®å‘½ä»¤çš„è®°å½•ï¼ˆå«å®Œæ•´ä¼ è¾“å¸§å­—èŠ‚ï¼Œç”¨äºæµ‹è¯•æ ¡éªŒ CRC/æ ¼å¼ï¼‰
 struct MockSentCmd {
-    int cmd_code = 0;              // ÄÚ²ã aa55 Ö¡¹¦ÄÜÂë
-    int device_type = 0;           // ÄÚ²ã aa55 Ö¡Éè±¸ÀàĞÍ£¨sensor 1~4£©
+    int cmd_code = 0;              // å†…å±‚ aa55 å¸§åŠŸèƒ½ç 
+    int device_type = 0;           // å†…å±‚ aa55 å¸§è®¾å¤‡ç±»å‹ï¼ˆsensor 1~4ï¼‰
     int rw = 0;                    // RW_WRITE(0x40) / RW_READ(0x80)
-    QByteArray data;               // ÄÚ²ã payload
-    QByteArray transport_frame;    // ÍêÕû abab...dcdc ´«ÊäÖ¡£¨º¬Íâ²ã CRC16£©
+    QByteArray data;               // å†…å±‚ payload
+    QByteArray transport_frame;    // å®Œæ•´ abab...dcdc ä¼ è¾“å¸§ï¼ˆå«å¤–å±‚ CRC16ï¼‰
 };
 
 class MockProtocolHandler : public ProtocolHandler {
 public:
     explicit MockProtocolHandler(const Config& config, QObject* parent = nullptr);
 
-    // Mock ÎŞ UDP Í¨ĞÅ£¬ÓÀÔ¶¾ÍĞ÷
+    // Mock æ—  UDP é€šä¿¡ï¼Œæ°¸è¿œå°±ç»ª
     void wait_all_ready(int timeoutMs = 10000) override { (void)timeoutMs; }
 
-    // ©¤©¤ ¿ØÖÆÃüÁî¸²¸Ç£ºÁ¢¼´·µ»Ø³É¹¦ ACK / Ä¬ÈÏ²âÊÔÊı¾İ ©¤©¤
+    // â”€â”€ æ§åˆ¶å‘½ä»¤è¦†ç›–ï¼šç«‹å³è¿”å›æˆåŠŸ ACK / é»˜è®¤æµ‹è¯•æ•°æ® â”€â”€
     void set_exposure(int us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
@@ -67,35 +67,36 @@ public:
     void read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
+    void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
 
-    // ©¤©¤ ·¢ËÍÃüÁî²¶»ñ£¨¹© SDKTest Ğ£Ñé"µ÷ÓÃºóÊÇ·ñ·¢ËÍÁË¶ÔÓ¦Ğ­ÒéÃüÁî"£©©¤©¤
-    // ¼ÇÂ¼Ò»ÌõÒÑ·¢ËÍÃüÁî£¨Ïß³Ì°²È«£©
+    // â”€â”€ å‘é€å‘½ä»¤æ•è·ï¼ˆä¾› SDKTest æ ¡éªŒ"è°ƒç”¨åæ˜¯å¦å‘é€äº†å¯¹åº”åè®®å‘½ä»¤"ï¼‰â”€â”€
+    // è®°å½•ä¸€æ¡å·²å‘é€å‘½ä»¤ï¼ˆçº¿ç¨‹å®‰å…¨ï¼‰
     void record_sent(int cmd_code, int device_type, int rw,
                      const QByteArray& data, const QByteArray& transport_frame);
-    // È¡×ß²¢Çå¿ÕÈ«²¿ÒÑ¼ÇÂ¼ÃüÁî£¨Ïß³Ì°²È«£©
+    // å–èµ°å¹¶æ¸…ç©ºå…¨éƒ¨å·²è®°å½•å‘½ä»¤ï¼ˆçº¿ç¨‹å®‰å…¨ï¼‰
     QVector<MockSentCmd> take_sent_commands();
-    // Î´Çå¿ÕµÄµ±Ç°¼ÇÂ¼ÌõÊı£¨Ïß³Ì°²È«£©
+    // æœªæ¸…ç©ºçš„å½“å‰è®°å½•æ¡æ•°ï¼ˆçº¿ç¨‹å®‰å…¨ï¼‰
     int sent_command_count() const;
 
-    // Mock Ö¡Éú³É£¨start_capture/stop_capture ¸²¸ÇÄÚ²¿µ÷ÓÃ£»SDKTest Ò²¿ÉÏÔÊ½Çı¶¯£©
+    // Mock å¸§ç”Ÿæˆï¼ˆstart_capture/stop_capture è¦†ç›–å†…éƒ¨è°ƒç”¨ï¼›SDKTest ä¹Ÿå¯æ˜¾å¼é©±åŠ¨ï¼‰
     void start_mock_frames();
     void stop_mock_frames();
     bool is_capturing() const { return m_capturing.load(); }
     uint32_t generated_frames() const { return m_frame_id.load(); }
 
-    // Mock Éè±¸ĞÅÏ¢
+    // Mock è®¾å¤‡ä¿¡æ¯
     QString mock_fpga_version() const { return m_fpgaVersion; }
 
-    // ¾²Ä¬Ä£Ê½£ºÖÃ true ºó reply() ²»ÔÙ»Øµ÷£¨Ä£Äâ"ÎŞ ACK"£©£¬¹©Òì²½ API ³¬Ê±²âÊÔ¡£
-    // ÖÃ false »Ö¸´Õı³£Á¢¼´»Ø¸´¡£Ó°ÏìÏÂÒ»¸ö/ºóĞøËùÓĞ¿ØÖÆÃüÁî¡£
+    // é™é»˜æ¨¡å¼ï¼šç½® true å reply() ä¸å†å›è°ƒï¼ˆæ¨¡æ‹Ÿ"æ—  ACK"ï¼‰ï¼Œä¾›å¼‚æ­¥ API è¶…æ—¶æµ‹è¯•ã€‚
+    // ç½® false æ¢å¤æ­£å¸¸ç«‹å³å›å¤ã€‚å½±å“ä¸‹ä¸€ä¸ª/åç»­æ‰€æœ‰æ§åˆ¶å‘½ä»¤ã€‚
     void set_silent_acks(bool silent) { m_silent_acks = silent; }
     bool silent_acks() const { return m_silent_acks; }
 
-    // Mock Ä¬ÈÏ²âÊÔÊı¾İ£¨¶ÁÃüÁî·µ»ØÖµ£»Set ²»³Ö¾Ã»¯£©
+    // Mock é»˜è®¤æµ‹è¯•æ•°æ®ï¼ˆè¯»å‘½ä»¤è¿”å›å€¼ï¼›Set ä¸æŒä¹…åŒ–ï¼‰
     int default_exposure() const { return 1000; }
     int default_gain() const { return 1; }
     int default_exposure_delay() const { return 100; }
@@ -107,27 +108,31 @@ public:
     int default_external_trigger() const { return 0; }
     int default_batch_length() const { return 100; }
 
+    // è®°å½•ä¸Šæ¬¡ set_batch_length çš„å€¼ï¼ˆä¾› get_batch_data ç”Ÿæˆå¯¹åº”æ•°é‡çš„æ¨¡æ‹Ÿå¸§ï¼‰
+    int current_batch_length() const { return m_batch_length; }
+
 private:
-    // ÓÃÕæÊµ´ò°üÂ·¾¶Éú³É±¾´Î¿ØÖÆÃüÁî¶ÔÓ¦µÄ´«ÊäÖ¡²¢¼ÇÂ¼£»·µ»ØÊ×¸ö´«ÊäÖ¡¡£
-    // £¨build_command_frame Éú³É aa55 ÄÚ²ãÖ¡º¬ÄÚ²ã CRC£¬split_into_transport_frames
-    //   Éú³É abab Íâ²ãÖ¡º¬Íâ²ã CRC ¡ª¡ª ÓëÕæÊµ send_cmd ÍêÈ«Ò»ÖÂ£©
+    // ç”¨çœŸå®æ‰“åŒ…è·¯å¾„ç”Ÿæˆæœ¬æ¬¡æ§åˆ¶å‘½ä»¤å¯¹åº”çš„ä¼ è¾“å¸§å¹¶è®°å½•ï¼›è¿”å›é¦–ä¸ªä¼ è¾“å¸§ã€‚
+    // ï¼ˆbuild_command_frame ç”Ÿæˆ aa55 å†…å±‚å¸§å«å†…å±‚ CRCï¼Œsplit_into_transport_frames
+    //   ç”Ÿæˆ abab å¤–å±‚å¸§å«å¤–å±‚ CRC â€”â€” ä¸çœŸå® send_cmd å®Œå…¨ä¸€è‡´ï¼‰
     QByteArray emit_command(int cmd_code, int rw, const QByteArray& data, int sensor_id);
 
     void generate_frame();
-    static QByteArray build_frame();                     // ¹Ì¶¨ÖµÌî³ä 1280¡Á1024
-    static QByteArray be32(uint32_t v);                  // 4 ×Ö½Ú´ó¶Ë£¨adapter be32 ½âÎö£©
-    static QByteArray be16(uint16_t v);                  // 2 ×Ö½Ú´ó¶Ë£¨adapter be16 ½âÎö£©
+    static QByteArray build_frame();                     // å›ºå®šå€¼å¡«å…… 1280Ã—1024
+    static QByteArray be32(uint32_t v);                  // 4 å­—èŠ‚å¤§ç«¯ï¼ˆadapter be32 è§£æï¼‰
+    static QByteArray be16(uint16_t v);                  // 2 å­—èŠ‚å¤§ç«¯ï¼ˆadapter be16 è§£æï¼‰
     void reply(std::function<void(const ControlFrame&)> cb,
-               const QByteArray& data = QByteArray());   // Á¢¼´»Øµ÷³É¹¦ ACK£¨¾²Ä¬Ê±Ìø¹ı£©
+               const QByteArray& data = QByteArray());   // ç«‹å³å›è°ƒæˆåŠŸ ACKï¼ˆé™é»˜æ—¶è·³è¿‡ï¼‰
 
-    QTimer* m_frame_timer = nullptr;          // ÔËĞĞÔÚ mock ËùÊôÏß³Ì£¨ËŞÖ÷Ö÷Ïß³ÌÊÂ¼şÑ­»·£©
+    QTimer* m_frame_timer = nullptr;          // è¿è¡Œåœ¨ mock æ‰€å±çº¿ç¨‹ï¼ˆå®¿ä¸»ä¸»çº¿ç¨‹äº‹ä»¶å¾ªç¯ï¼‰
     std::atomic<bool> m_capturing{false};
-    std::atomic<bool> m_silent_acks{false};   // ¾²Ä¬Ä£Ê½£ºÌø¹ı reply£¨Ä£ÄâÎŞ ACK£©
+    std::atomic<bool> m_silent_acks{false};   // é™é»˜æ¨¡å¼ï¼šè·³è¿‡ replyï¼ˆæ¨¡æ‹Ÿæ—  ACKï¼‰
     std::atomic<uint32_t> m_frame_id{0};
     QString m_fpgaVersion = QStringLiteral("MOCK_FPGA_V1.0");
 
-    mutable QMutex m_cmd_mutex;               // ±£»¤ m_sent_cmds
-    QVector<MockSentCmd> m_sent_cmds;         // ÒÑ·¢ËÍÃüÁî¼ÇÂ¼
+    mutable QMutex m_cmd_mutex;               // ä¿æŠ¤ m_sent_cmds
+    QVector<MockSentCmd> m_sent_cmds;         // å·²å‘é€å‘½ä»¤è®°å½•
+    int m_batch_length = 100;                  // ä¸Šæ¬¡ set_batch_length çš„å€¼
 };
 
 #endif // MOCK_PROTOCOL_HANDLER_H
