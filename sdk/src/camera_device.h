@@ -2,8 +2,8 @@
 #define CAMERA_DEVICE_H
 
 #include <cstdint>
+#include <vector>
 
-#include <map>
 #include <QMetaObject>
 #include <QMutex>
 #include <QString>
@@ -91,9 +91,6 @@ public:
     CallbackWorker* worker() { return m_worker; }
     CommandManager* command_manager() { return m_cmdMgr; }
 
-    // 按 sensorId 获取批处理数据缓存（线程安全，可从任意线程调用）
-    BatchBuffer& batchBuffer(uint16_t sensorId) { return m_batchBuffers[sensorId]; }
-
     void open() { m_open = true; }
     void close() { m_open = false; }
 
@@ -111,8 +108,6 @@ private:
     CallbackWorker* m_worker = nullptr;       // owned（SDK 唯一新增线程）
     CommandManager* m_cmdMgr = nullptr;       // owned（SDK 异步控制命令管理线程）
     QMetaObject::Connection m_frameConn;      // ProtocolHandler::frame_ready → dispatcher
-
-    std::map<uint16_t, BatchBuffer> m_batchBuffers;  // 按 sensorId 索引的批处理缓存
 };
 
 #endif // CAMERA_DEVICE_H

@@ -3,3 +3,4 @@ build
 *.pyc
 *.log
 .trae/
+build_new/

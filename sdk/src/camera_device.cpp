@@ -1,6 +1,8 @@
 #include "camera_device.h"
 
+#include <algorithm>
 #include <cstring>
+#include <memory>
 
 #include <QCoreApplication>
 #include <QMap>
@@ -200,19 +202,22 @@ CAM_API const char* CAM_CALL Cam_GetSdkVersion() {
     return kVersion;
 }
 
-CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceList* pList, uint32_t /*timeoutMs*/) {
-    if (!pList) return CAM_ERR_INVALID_PARAM;
+CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceInformation* outArray, uint32_t capacity,
+                                           uint32_t* outCount, uint32_t /*timeoutMs*/) {
+    if (!outCount) return CAM_ERR_INVALID_PARAM;
     QMutexLocker locker(&g_mutex);
     if (!g_initialized) return CAM_ERR_NOT_INITIALIZED;
 
-    pList->count = 0;
-    // 当前接入方式：宿主传入单个 ProtocolHandler（即单 FPGA 网关），
-    // 或独立 SDK 模式（Cam_OpenNetworkDevice/Mock）内部通信已打开。
-    if (g_protocol || g_internalThread) {
-        pList->count = 1;
-        DeviceInformation& info = pList->devices[0];
-        std::memset(&info, 0, sizeof(info));
-        info.status = 1;  // 网关在线（基础状态）
+    const uint32_t totalCount = (g_protocol || g_internalThread) ? 1 : 0;
+    *outCount = totalCount;
+
+    if (outArray && capacity > 0 && totalCount > 0) {
+        const uint32_t copyCount = std::min(capacity, totalCount);
+        for (uint32_t i = 0; i < copyCount; ++i) {
+            DeviceInformation& info = outArray[i];
+            std::memset(&info, 0, sizeof(info));
+            info.status = 1;  // 网关在线（基础状态）
+        }
     }
     return CAM_OK;
 }
@@ -787,7 +792,7 @@ struct BatchAccumContext {
     QMutex        mutex;
     uint32_t      expectedCount = 0;
     uint32_t      receivedCount = 0;  // 由 mutex 保护
-    BatchBuffer*  buffer = nullptr;
+    BatchBuffer*  buffer = nullptr;   // 独立分配的批处理缓存对象
     DataHandler   origHandler = nullptr;
     void*         origUserData = nullptr;
 };
@@ -814,7 +819,9 @@ static void CAM_CALL batch_accum_handler(const FrameInfo* pFrameInfo, const void
 }
 
 CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sensorId,
-                                               uint32_t timeoutMs) {
+                                               uint32_t timeoutMs, BatchDataHandle* pBatchData) {
+    if (pBatchData) *pBatchData = nullptr;
+
     CameraDevice* dev = nullptr;
     {
         QMutexLocker locker(&g_mutex);
@@ -822,6 +829,7 @@ CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sen
     }
     if (!dev) return CAM_ERR_INVALID_HANDLE;
     if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
+    if (!pBatchData) return CAM_ERR_INVALID_PARAM;
 
     // 1) 读取 batch_length 确定期望帧数
     BatchConfig batchCfg;
@@ -833,14 +841,13 @@ CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sen
     uint32_t expectedCount = batchCfg.length;
     if (expectedCount == 0) return CAM_ERR_INVALID_LENGTH;
 
-    // 2) 准备批处理缓存和累加上下文
-    BatchBuffer& buf = dev->batchBuffer(sensorId);
-    buf.clear();
-    buf.expectedCount = expectedCount;
+    // 2) 创建独立的批处理缓存对象（不再依赖 CameraDevice 内部的隐式缓存）
+    std::unique_ptr<BatchBuffer> batchBuf(new BatchBuffer);
+    batchBuf->expectedCount = expectedCount;
 
     BatchAccumContext ctx;
     ctx.expectedCount = expectedCount;
-    ctx.buffer = &buf;
+    ctx.buffer = batchBuf.get();
 
     // 3) 保存原始 handler，设置临时累加 handler
     CallbackWorker* worker = dev->worker();
@@ -850,7 +857,7 @@ CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sen
     ctx.origUserData = worker->userData();
     worker->set_handler(batch_accum_handler, &ctx);
 
-    // 4) 发送 CMD_GET_BATCH_DATA 命令
+    // 4) 发送获取批数据命令
     CamError sendErr;
     {
         QMutexLocker locker(&g_mutex);
@@ -880,37 +887,34 @@ CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sen
         }
     }
 
-    // 6) 恢复原始 handler
+    // 6) 恢复原始 handler，并将所有权转移给调用方
     worker->set_handler(ctx.origHandler, ctx.origUserData);
+    *pBatchData = static_cast<BatchDataHandle>(batchBuf.release());
     return CAM_OK;
 }
 
-CAM_API uint32_t CAM_CALL Cam_GetBatchPointCount(CameraHandle handle, uint16_t sensorId) {
-    QMutexLocker locker(&g_mutex);
-    CameraDevice* dev = device_for(handle);
-    if (!dev) return 0;
-    if (sensorId < 1 || sensorId > 4) return 0;
-    return dev->batchBuffer(sensorId).pointCount();
+CAM_API CamError CAM_CALL Cam_FreeBatchData(BatchDataHandle batchData) {
+    if (!batchData) return CAM_ERR_INVALID_PARAM;
+    delete static_cast<BatchBuffer*>(batchData);
+    return CAM_OK;
 }
 
-CAM_API uint32_t CAM_CALL Cam_GetBatchDataWidth(CameraHandle handle, uint16_t sensorId) {
-    QMutexLocker locker(&g_mutex);
-    CameraDevice* dev = device_for(handle);
-    if (!dev) return 0;
-    if (sensorId < 1 || sensorId > 4) return 0;
-    return dev->batchBuffer(sensorId).dataWidth();
+CAM_API uint32_t CAM_CALL Cam_GetBatchPointCount(BatchDataHandle batchData) {
+    if (!batchData) return 0;
+    return static_cast<BatchBuffer*>(batchData)->pointCount();
 }
 
-CAM_API CamError CAM_CALL Cam_GetBatchData(CameraHandle handle, uint16_t sensorId,
+CAM_API uint32_t CAM_CALL Cam_GetBatchDataWidth(BatchDataHandle batchData) {
+    if (!batchData) return 0;
+    return static_cast<BatchBuffer*>(batchData)->dataWidth();
+}
+
+CAM_API CamError CAM_CALL Cam_GetBatchData(BatchDataHandle batchData,
                                            void* pDataBuf, uint32_t bufSize) {
-    QMutexLocker locker(&g_mutex);
-    CameraDevice* dev = device_for(handle);
-    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    if (!batchData) return CAM_ERR_INVALID_PARAM;
     if (!pDataBuf || bufSize == 0) return CAM_ERR_INVALID_PARAM;
-    if (sensorId < 1 || sensorId > 4) return CAM_ERR_INVALID_PARAM;
 
-    BatchBuffer& buf = dev->batchBuffer(sensorId);
-    QByteArray flat = buf.flatten();
+    QByteArray flat = static_cast<BatchBuffer*>(batchData)->flatten();
     if (flat.isEmpty()) return CAM_ERR_NO_DEVICE;  // 无数据
     if (static_cast<uint32_t>(flat.size()) > bufSize) return CAM_ERR_BUFFER_TOO_SMALL;
 

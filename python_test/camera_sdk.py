@@ -141,13 +141,6 @@ class FrameInfo(Structure):
         ("dataType", c_uint16),
     ]
 
-class DeviceList(Structure):
-    _pack_ = 1
-    _fields_ = [
-        ("count", c_uint32),
-        ("devices", DeviceInformation * 16),
-    ]
-
 # =========================================================================
 # 回调函数类型
 # =========================================================================
@@ -170,7 +163,7 @@ Cam_Finalize = _declare("Cam_Finalize", c_int32)
 Cam_GetSdkVersion = _declare("Cam_GetSdkVersion", c_char_p)
 
 # 设备发现
-Cam_EnumDevices = _declare("Cam_EnumDevices", c_int32, POINTER(DeviceList), c_uint32)
+Cam_EnumDevices = _declare("Cam_EnumDevices", c_int32, POINTER(DeviceInformation), c_uint32, POINTER(c_uint32), c_uint32)
 
 # 打开/关闭
 Cam_OpenNetworkDevice = _declare("Cam_OpenNetworkDevice", c_int32, c_char_p, c_uint16, c_uint16, POINTER(c_void_p))
@@ -220,10 +213,11 @@ Cam_GetPointCloudSync = _declare("Cam_GetPointCloudSync", c_int32, c_void_p, c_u
 
 # 批处理数据
 Cam_RequestBatchData = _declare("Cam_RequestBatchData", c_int32, c_void_p, c_uint16, c_uint32)
-Cam_ReceiveBatchData = _declare("Cam_ReceiveBatchData", c_int32, c_void_p, c_uint16, c_uint32)
-Cam_GetBatchPointCount = _declare("Cam_GetBatchPointCount", c_uint32, c_void_p, c_uint16)
-Cam_GetBatchDataWidth = _declare("Cam_GetBatchDataWidth", c_uint32, c_void_p, c_uint16)
-Cam_GetBatchData = _declare("Cam_GetBatchData", c_int32, c_void_p, c_uint16, c_void_p, c_uint32)
+Cam_ReceiveBatchData = _declare("Cam_ReceiveBatchData", c_int32, c_void_p, c_uint16, c_uint32, POINTER(c_void_p))
+Cam_FreeBatchData = _declare("Cam_FreeBatchData", c_int32, c_void_p)
+Cam_GetBatchPointCount = _declare("Cam_GetBatchPointCount", c_uint32, c_void_p)
+Cam_GetBatchDataWidth = _declare("Cam_GetBatchDataWidth", c_uint32, c_void_p)
+Cam_GetBatchData = _declare("Cam_GetBatchData", c_int32, c_void_p, c_void_p, c_uint32)
 Cam_RequestBatchDataAsync = _declare("Cam_RequestBatchDataAsync", c_int32, c_void_p, c_uint16, c_uint32, CommandResultCallbackType, c_void_p)
 
 # 异步 API
@@ -248,6 +242,55 @@ Cam_GetPointCloudAsync = _declare("Cam_GetPointCloudAsync", c_int32, c_void_p, c
 # =========================================================================
 # 高层 Python 封装类
 # =========================================================================
+
+class BatchData:
+    """批处理数据对象句柄封装，支持 with 语句自动释放。"""
+
+    def __init__(self, handle):
+        self._handle = handle
+
+    @property
+    def handle(self):
+        return self._handle
+
+    @property
+    def is_valid(self):
+        return self._handle.value is not None
+
+    def point_count(self):
+        if not self.is_valid:
+            return 0
+        return Cam_GetBatchPointCount(self._handle)
+
+    def data_width(self):
+        if not self.is_valid:
+            return 0
+        return Cam_GetBatchDataWidth(self._handle)
+
+    def get_data(self, buf_size=0):
+        """获取批处理原始数据。buf_size=0 时自动按 point_count * width * 12 计算。"""
+        if not self.is_valid:
+            return CamError.ERR_INVALID_PARAM, None
+        if buf_size == 0:
+            buf_size = self.point_count() * self.data_width() * 12
+        if buf_size == 0:
+            return CamError.ERR_NO_DEVICE, None
+        buf = ctypes.create_string_buffer(buf_size)
+        err = CamError(Cam_GetBatchData(self._handle, buf, buf_size))
+        return err, buf.raw if err == CamError.OK else None
+
+    def free(self):
+        if self.is_valid:
+            Cam_FreeBatchData(self._handle)
+            self._handle = c_void_p(None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.free()
+        return False
+
 
 class CameraDevice:
     """CameraSDK 设备封装，提供 Pythonic 的接口。"""
@@ -480,20 +523,25 @@ class CameraDevice:
         return CamError(Cam_StopBatch(self._handle, sensor_id))
 
     def receive_batch_data(self, sensor_id=1, timeout_ms=5000):
-        return CamError(Cam_ReceiveBatchData(self._handle, sensor_id, timeout_ms))
+        """阻塞接收批处理数据。返回 (CamError, BatchData)。"""
+        handle = c_void_p()
+        err = CamError(Cam_ReceiveBatchData(self._handle, sensor_id, timeout_ms, byref(handle)))
+        if err == CamError.OK and handle.value:
+            return err, BatchData(handle)
+        return err, None
 
-    def get_batch_point_count(self, sensor_id=1):
-        return Cam_GetBatchPointCount(self._handle, sensor_id)
+    def enum_devices(self, capacity=8, timeout_ms=1000):
+        """枚举设备。返回 (CamError, [DeviceInformation...], total_count)。"""
+        if capacity == 0:
+            count = c_uint32()
+            err = CamError(Cam_EnumDevices(None, 0, byref(count), timeout_ms))
+            return err, [], count.value
 
-    def get_batch_data_width(self, sensor_id=1):
-        return Cam_GetBatchDataWidth(self._handle, sensor_id)
-
-    def get_batch_data(self, sensor_id=1, buf_size=0):
-        if buf_size == 0:
-            buf_size = self.get_batch_point_count(sensor_id) * self.get_batch_data_width(sensor_id) * 12
-        buf = ctypes.create_string_buffer(buf_size)
-        err = CamError(Cam_GetBatchData(self._handle, sensor_id, buf, buf_size))
-        return err, buf.raw if err == CamError.OK else None
+        arr = (DeviceInformation * capacity)()
+        count = c_uint32()
+        err = CamError(Cam_EnumDevices(arr, capacity, byref(count), timeout_ms))
+        devices = [arr[i] for i in range(min(count.value, capacity))]
+        return err, devices, count.value
 
     def get_sensor_count(self):
         count = c_uint32()

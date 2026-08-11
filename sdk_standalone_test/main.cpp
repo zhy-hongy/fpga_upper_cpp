@@ -506,9 +506,10 @@ static void run_mock_tests(CameraHandle h) {
     // 3) 阻塞接收批处理数据（含已注册 DataHandler 转发验证）
     std::printf("  调用 Cam_ReceiveBatchData (sensor=%u, timeout=5000ms)...\n", testSensor);
     g_frameCount.store(0);  // 重置帧计数，验证原始 handler 仍被调用
+    BatchDataHandle batch = nullptr;
     {
-        CamError err = Cam_ReceiveBatchData(h, testSensor, 5000);
-        check("Cam_ReceiveBatchData -> CAM_OK", err == CAM_OK,
+        CamError err = Cam_ReceiveBatchData(h, testSensor, 5000, &batch);
+        check("Cam_ReceiveBatchData -> CAM_OK", err == CAM_OK && batch != nullptr,
               "-> err=" + std::to_string(err));
     }
 
@@ -523,14 +524,14 @@ static void run_mock_tests(CameraHandle h) {
 
     // 5) 验证 pointCount
     {
-        uint32_t pc = Cam_GetBatchPointCount(h, testSensor);
+        uint32_t pc = Cam_GetBatchPointCount(batch);
         check("GetBatchPointCount = 5", pc == batchLen,
               "got=" + std::to_string(pc));
     }
 
     // 6) 验证 dataWidth
     {
-        uint32_t dw = Cam_GetBatchDataWidth(h, testSensor);
+        uint32_t dw = Cam_GetBatchDataWidth(batch);
         check("GetBatchDataWidth = 1280", dw == pointWidth,
               "got=" + std::to_string(dw));
     }
@@ -539,7 +540,7 @@ static void run_mock_tests(CameraHandle h) {
     {
         uint32_t expectedSize = batchLen * pointWidth * bytesPerPoint;
         std::vector<uint8_t> buf(expectedSize);
-        CamError err = Cam_GetBatchData(h, testSensor, buf.data(), expectedSize);
+        CamError err = Cam_GetBatchData(batch, buf.data(), expectedSize);
         check("GetBatchData -> CAM_OK", err == CAM_OK,
               "-> err=" + std::to_string(err));
 
@@ -557,7 +558,7 @@ static void run_mock_tests(CameraHandle h) {
     // 8) 缓冲区不足测试
     {
         std::vector<uint8_t> smallBuf(100);
-        CamError err = Cam_GetBatchData(h, testSensor, smallBuf.data(), 100);
+        CamError err = Cam_GetBatchData(batch, smallBuf.data(), 100);
         check("GetBatchData(buf too small) -> CAM_ERR_BUFFER_TOO_SMALL",
               err == CAM_ERR_BUFFER_TOO_SMALL,
               "-> err=" + std::to_string(err));
@@ -565,10 +566,17 @@ static void run_mock_tests(CameraHandle h) {
 
     // 9) 参数校验
     {
-        check("GetBatchPointCount(null)", Cam_GetBatchPointCount(nullptr, testSensor) == 0);
-        check("GetBatchDataWidth(null)", Cam_GetBatchDataWidth(nullptr, testSensor) == 0);
-        CamError err = Cam_GetBatchData(nullptr, testSensor, nullptr, 0);
-        check("GetBatchData(null) -> INVALID_HANDLE", err == CAM_ERR_INVALID_HANDLE,
+        check("GetBatchPointCount(null)", Cam_GetBatchPointCount(nullptr) == 0);
+        check("GetBatchDataWidth(null)", Cam_GetBatchDataWidth(nullptr) == 0);
+        CamError err = Cam_GetBatchData(nullptr, nullptr, 0);
+        check("GetBatchData(null) -> INVALID_PARAM", err == CAM_ERR_INVALID_PARAM,
+              "-> err=" + std::to_string(err));
+    }
+
+    // 10) 释放批处理数据对象
+    if (batch) {
+        CamError err = Cam_FreeBatchData(batch);
+        check("FreeBatchData -> CAM_OK", err == CAM_OK,
               "-> err=" + std::to_string(err));
     }
 }

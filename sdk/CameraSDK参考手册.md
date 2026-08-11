@@ -233,22 +233,24 @@ struct CalibrationData {
 |---|---|
 | 128 字节标定矩阵二进制块 | 当前协议无标定读写命令，相关 API 返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令 |
 
-### 5.8 DeviceList — 设备搜索列表
+### 5.8 设备搜索列表
 
 | 名称 | 定义 |
 |---|---|
-| 设备搜索列表结构体 | `DeviceList` |
+| 设备信息结构体 | `DeviceInformation` |
+
+`Cam_EnumDevices` 由调用方分配 `DeviceInformation` 数组并传入容量，SDK 写入实际发现的设备信息：
 
 ```cpp
-struct DeviceList {
-    uint32_t count;                 // 搜索到的 FPGA 网关数量
-    DeviceInformation devices[16];  // 主控板列表
-};
+DeviceInformation infos[8];
+uint32_t count = 0;
+Cam_EnumDevices(infos, 8, &count, 1000);
 ```
 
 | 描述 | 备注 |
 |---|---|
-| `Cam_EnumDevices` 输出 | 当前接入方式固定为单 FPGA 网关，count 为 0 或 1 |
+| `Cam_EnumDevices` 输出 | 当前接入方式固定为单 FPGA 网关，count 通常为 0 或 1 |
+| 容量不足 | `outCount` 始终返回实际总数，调用方可据此重新分配数组 |
 
 ### 5.9 FrameInfo — 数据回调帧头信息
 
@@ -518,23 +520,26 @@ const char* CAM_CALL Cam_GetSdkVersion();
 **格式**
 
 ```cpp
-CamError CAM_CALL Cam_EnumDevices(DeviceList* pList, uint32_t timeoutMs);
+CamError CAM_CALL Cam_EnumDevices(DeviceInformation* outArray, uint32_t capacity,
+                                   uint32_t* outCount, uint32_t timeoutMs);
 ```
 
 **参数**
 
-- `pList`：[out] 设备列表（`count` + 主控板信息数组），内存由调用方分配
+- `outArray`：[out] 调用方分配的设备信息数组，可为 `NULL`（仅查询数量）
+- `capacity`：`outArray` 数组容量（元素个数）
+- `outCount`：[out] 实际发现的设备数量（可能大于 `capacity`）
 - `timeoutMs`：枚举等待时间（毫秒），建议 1000
 
 **返回值**
 
-- `CAM_OK`：枚举成功（`pList->count` 为实际数量，可为 0）
+- `CAM_OK`：枚举成功（`outCount` 为实际数量，可为 0）
 - `CAM_ERR_NOT_INITIALIZED`：未调用 `Cam_Initialize`
-- `CAM_ERR_INVALID_PARAM`：`pList` 为空
+- `CAM_ERR_INVALID_PARAM`：`outCount` 为空
 
 **说明**
 
-枚举当前可发现的 FPGA 网关。宿主注入模式上报已注入的 1 台网关；独立 SDK 模式打开时上报 1 台。当前接入方式固定为单 FPGA 网关。
+枚举当前可发现的 FPGA 网关。宿主注入模式上报已注入的 1 台网关；独立 SDK 模式打开时上报 1 台。当前接入方式固定为单 FPGA 网关。调用方可先传 `NULL`/0 查询总数，再按需分配数组。
 
 #### 6.2.5 Cam_AttachProtocolHandler
 

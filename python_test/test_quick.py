@@ -83,13 +83,17 @@ print(f"SetBatchConfig length=5: {err.name}")
 err2, length = dev.get_batch_config(1)
 print(f"GetBatchConfig: {err2.name} length={length}")
 
-err = dev.receive_batch_data(1, 5000)
+err, batch = dev.receive_batch_data(1, 5000)
 print(f"ReceiveBatchData: {err.name}")
-count = dev.get_batch_point_count(1)
-width = dev.get_batch_data_width(1)
-print(f"BatchPointCount={count} DataWidth={width}")
-err, data = dev.get_batch_data(1)
-print(f"GetBatchData: {err.name} size={len(data) if data else 0}")
+if err == CamError.OK and batch is not None:
+    try:
+        count = batch.point_count()
+        width = batch.data_width()
+        print(f"BatchPointCount={count} DataWidth={width}")
+        err, data = batch.get_data()
+        print(f"GetBatchData: {err.name} size={len(data) if data else 0}")
+    finally:
+        batch.free()
 
 # 10. 清理
 dev.unregister_data_handler()

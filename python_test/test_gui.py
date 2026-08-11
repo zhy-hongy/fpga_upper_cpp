@@ -321,13 +321,18 @@ class CameraTestApp:
         self._log(f"正在阻塞接收批处理数据 (sensor={sid})...")
 
         def _worker():
-            err = self.device.receive_batch_data(sid, 5000)
-            count = self.device.get_batch_point_count(sid)
-            width = self.device.get_batch_data_width(sid)
-            self._log(f"ReceiveBatchData: {err.name} count={count} width={width}")
-            if err == CamError.OK:
-                err2, data = self.device.get_batch_data(sid)
+            err, batch = self.device.receive_batch_data(sid, 5000)
+            if err != CamError.OK or batch is None:
+                self._log(f"ReceiveBatchData: {err.name}")
+                return
+            try:
+                count = batch.point_count()
+                width = batch.data_width()
+                self._log(f"ReceiveBatchData: {err.name} count={count} width={width}")
+                err2, data = batch.get_data()
                 self._log(f"GetBatchData: {err2.name} size={len(data) if data else 0}")
+            finally:
+                batch.free()
 
         threading.Thread(target=_worker, daemon=True).start()
 

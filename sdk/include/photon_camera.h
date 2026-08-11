@@ -26,6 +26,10 @@ extern "C" {
 // 句柄仅代表已打开的设备，不代表底层的网络连接。
 typedef void* CameraHandle;
 
+// 批处理数据对象句柄。由 Cam_ReceiveBatchData 创建，Cam_FreeBatchData 释放。
+// 代表一次独立的批处理接收结果，避免多线程/多批次之间的隐式状态冲突。
+typedef void* BatchDataHandle;
+
 // =========================================================================
 // 2. 错误码与枚举
 // =========================================================================
@@ -125,7 +129,7 @@ struct TriggerConfig {
     uint16_t encoderInputMode;      // 编码器输入模式: 1=4倍频, 2=2倍频, 3=1倍频
     uint32_t encoderStep;           // 触发间隔脉冲数
     uint16_t externalEnable;        // 外部触发使能: 0=关闭, 1=开启
-    uint16_t reserved;              // 保留字段
+    uint16_t reserved;              // 保留，无需设置
 };
 
 // 批处理配置
@@ -137,12 +141,6 @@ struct BatchConfig {
 // 注意：当前版本暂不支持标定数据读写，调用将返回 CAM_ERR_NOT_SUPPORTED。
 struct CalibrationData {
     uint8_t  data[128];
-};
-
-// 设备搜索列表
-struct DeviceList {
-    uint32_t count;                 // 搜索到的设备数量
-    DeviceInformation devices[16];  // 设备列表（最多 16 台）
 };
 
 // 帧头信息（回调或同步取帧时返回）
@@ -220,9 +218,16 @@ CAM_API const char* CAM_CALL Cam_GetSdkVersion();
 // ── 5.2 设备发现 ──────────────────────────────────────────────────────
 
 // 枚举当前网络中可发现的设备。
-//   pList     : [out] 设备列表，内存由调用方分配
+//   outArray  : [out] 调用方分配的设备信息数组，可为 NULL（仅查询数量）
+//   capacity  : outArray 数组容量（元素个数）
+//   outCount  : [out] 实际发现的设备数量（可能大于 capacity）
 //   timeoutMs : 搜索超时时间（毫秒），建议 1000
-CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceList* pList, uint32_t timeoutMs);
+// 说明：
+//   - 当 outArray 非 NULL 且 capacity > 0 时，SDK 最多写入 capacity 个设备信息。
+//   - outCount 始终返回实际发现的设备总数，调用方可据此重新分配足够大的数组。
+//   - 当前架构为单 FPGA 网关，返回值通常为 0 或 1。
+CAM_API CamError CAM_CALL Cam_EnumDevices(DeviceInformation* outArray, uint32_t capacity,
+                                          uint32_t* outCount, uint32_t timeoutMs);
 
 // ── 5.3 打开 / 关闭设备 ────────────────────────────────────────────────
 
@@ -371,34 +376,40 @@ CAM_API CamError CAM_CALL Cam_GetPointCloudSync(CameraHandle handle, uint16_t se
 
 // ── 5.11c 批处理数据 ─────────────────────────────────────────────────────
 
-// 同步请求批处理数据。发送 CMD_GET_BATCH_DATA (0x0202) 命令请求 FPGA 发送缓存中的
-// 3D 点云线数据。FPGA ACK 后数据通过已注册的 DataHandler 回调到达。
-// 注意：调用前需先通过 Cam_StartBatch 启动批处理，否则 FPGA 无缓存数据。
+// 同步请求批处理数据。请求 FPGA 发送缓存中的 3D 点云数据。
+// ACK 后数据帧通过已注册的 DataHandler 回调到达。
+// 注意：调用前需先通过 Cam_StartBatch 启动批处理。
 CAM_API CamError CAM_CALL Cam_RequestBatchData(CameraHandle handle, uint16_t sensorId,
                                                uint32_t timeoutMs);
 
 // 阻塞接收批处理数据（同步等待 FPGA 完成批处理并返回所有数据帧）。
-// 内部依次：发送 CMD_GET_BATCH_DATA (0x0202) → 等待 ACK →
-//           阻塞等待所有数据帧到达 → 存入内部缓存。
-// 返回后可通过以下函数获取数据：
-//   - Cam_GetBatchPointCount → 批处理行数
-//   - Cam_GetBatchDataWidth  → 数据宽度
-//   - Cam_GetBatchData       → 原始数据
-// 典型调用：Cam_StartBatch → Cam_ReceiveBatchData → Cam_GetBatchData → Cam_StopBatch
+// 成功后创建独立的 BatchDataHandle，后续通过该句柄读取数据，使用完后须调用
+// Cam_FreeBatchData 释放。
+//   pBatchData : [out] 成功时写入 BatchDataHandle，失败时写入 nullptr
+// 典型调用：
+//   BatchDataHandle batch;
+//   Cam_ReceiveBatchData(handle, sensorId, timeoutMs, &batch);
+//   uint32_t count = Cam_GetBatchPointCount(batch);
+//   uint32_t width = Cam_GetBatchDataWidth(batch);
+//   Cam_GetBatchData(batch, buf, bufSize);
+//   Cam_FreeBatchData(batch);
 CAM_API CamError CAM_CALL Cam_ReceiveBatchData(CameraHandle handle, uint16_t sensorId,
-                                               uint32_t timeoutMs);
+                                               uint32_t timeoutMs, BatchDataHandle* pBatchData);
 
-// 获取最近一次批处理的行数（Cam_ReceiveBatchData 成功后调用）。
-CAM_API uint32_t CAM_CALL Cam_GetBatchPointCount(CameraHandle handle, uint16_t sensorId);
+// 释放由 Cam_ReceiveBatchData 创建的批处理数据对象。
+CAM_API CamError CAM_CALL Cam_FreeBatchData(BatchDataHandle batchData);
 
-// 获取最近一次批处理的数据宽度（每行点数，Cam_ReceiveBatchData 成功后调用）。
-CAM_API uint32_t CAM_CALL Cam_GetBatchDataWidth(CameraHandle handle, uint16_t sensorId);
+// 获取批处理数据的行数。
+CAM_API uint32_t CAM_CALL Cam_GetBatchPointCount(BatchDataHandle batchData);
 
-// 获取批处理原始数据（所有帧数据按行顺序拼接，Cam_ReceiveBatchData 成功后调用）。
+// 获取批处理数据的数据宽度（每行点数）。
+CAM_API uint32_t CAM_CALL Cam_GetBatchDataWidth(BatchDataHandle batchData);
+
+// 获取批处理原始数据（所有帧数据按行顺序拼接）。
 // 总大小 = pointCount × dataWidth × 每点字节数（由 dataType 决定）。
 // pDataBuf : 调用方分配的缓冲区
 // bufSize  : 缓冲区大小（字节），须 ≥ 总数据大小，否则返回 CAM_ERR_BUFFER_TOO_SMALL
-CAM_API CamError CAM_CALL Cam_GetBatchData(CameraHandle handle, uint16_t sensorId,
+CAM_API CamError CAM_CALL Cam_GetBatchData(BatchDataHandle batchData,
                                            void* pDataBuf, uint32_t bufSize);
 
 // [异步] 请求批处理数据。结果通过 CommandResultCallback 通知。
@@ -495,46 +506,7 @@ CAM_API CamError CAM_CALL Cam_GetPointCloudAsync(CameraHandle handle, uint16_t s
                                                  void* pUserData);
 
 // =========================================================================
-// 6. 典型调用流程
-// =========================================================================
-//
-// 最简示例（直连 FPGA）：
-//
-//   Cam_Initialize();
-//
-//   CameraHandle handle = nullptr;
-//   Cam_OpenNetworkDevice("192.168.10.10", 5000, 60000, &handle);
-//
-//   // 注册数据回调
-//   Cam_RegisterDataHandler(handle, MyDataHandler, nullptr);
-//
-//   // 配置 Sensor 1
-//   SensorConfig cfg = {};
-//   cfg.exposureTime = 1000;
-//   cfg.gain         = 200;
-//   cfg.sampleRate   = 100;
-//   Cam_SetSensorConfig(handle, 1, &cfg);
-//
-//   // 开始采集
-//   Cam_StartCapture(handle, 1);
-//
-//   // ... 数据通过 MyDataHandler 回调到达 ...
-//
-//   // 停止并清理
-//   Cam_StopCapture(handle, 1);
-//   Cam_CloseDevice(handle);
-//   Cam_Finalize();
-//
-// 异步示例：
-//
-//   Cam_StartCaptureAsync(handle, 1, 3000,
-//       [](CamError r, uint16_t id, void* ud) {
-//           if (r == CAM_OK) { /* 开始成功 */ }
-//       }, nullptr);
-//   // 立即返回 CAM_PENDING，不阻塞
-
-// =========================================================================
-// 7. 注意事项
+// 6. 注意事项
 // =========================================================================
 //
 // 1. 初始化：所有 API 调用前必须先调 Cam_Initialize()。
@@ -551,7 +523,7 @@ CAM_API CamError CAM_CALL Cam_GetPointCloudAsync(CameraHandle handle, uint16_t s
 //    建议在工作线程中调用，避免阻塞 UI 线程。
 
 // =========================================================================
-// 8. 内部/测试 API（仅供上位机或测试使用，第三方用户无需关注）
+// 7. 内部/测试 API（仅供上位机或测试使用，第三方用户无需关注）
 // =========================================================================
 
 // 打开 Mock 设备（无需真实 FPGA，SDK 内部生成模拟数据）。
