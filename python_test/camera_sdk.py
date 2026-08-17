@@ -94,7 +94,6 @@ class SensorConfig(Structure):
     _fields_ = [
         ("exposureTime", c_uint32),
         ("gain", c_uint32),
-        ("exposureDelay", c_uint32),
         ("roiStart", c_uint16),
         ("roiWidth", c_uint16),
         ("pixelPitch", c_float),

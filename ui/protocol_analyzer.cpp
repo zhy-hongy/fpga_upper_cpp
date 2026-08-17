@@ -18,12 +18,11 @@ static const char* cmd_name(int code) {
     switch (code) {
         case 0x0001: return "曝光时间 (EXPOSURE_TIME)";
         case 0x0002: return "增益 (GAIN)";
-        case 0x0503: return "读取FPGA软件版本 (READ_VERSION)";
-        case 0x0007: return "帧率 (FRAME_RATE)";
-        case 0x0003: return "曝光延迟 (EXPOSURE_DELAY)";
+        case 0x0003: return "设置/获取X轴Roi (ROI_X)";
+        case 0x0007: return "获取相机固件版本 (CAMERA_VERSION)";
         case 0x000A: return "采样率 (SAMPLE_RATE)";
-        case 0x000C: return "获取相机数据 (GET_CAMERA_DATA)";
-        case 0x0011: return "启停采集 (START_STOP)";
+        case 0x000C: return "设置图像模式 (IMAGE_MODE)";
+        case 0x0011: return "启停采集 (START_STOP, legacy/已废弃)";
         case 0x0101: return "触发模式 (TRIGGER_MODE)";
         case 0x0102: return "编码器类型 (ENCODER_TYPE)";
         case 0x0103: return "编码器输入模式 (ENCODER_MODE)";
@@ -33,6 +32,12 @@ static const char* cmd_name(int code) {
         case 0x0203: return "外部触发开始 (EXTERNAL_TRIGGER)";
         case 0x0204: return "启动/停止批处理 (BATCH_CONTROL)";
         case 0x0205: return "重置缓存数据 (RESET_BUFFER)";
+        case 0x0301: return "获取相机数据 图像 (DATA_IMAGE_2D)";
+        case 0x0302: return "获取相机数据 中心线 (DATA_CENTERLINE)";
+        case 0x0303: return "获取相机数据 3D点云 (DATA_POINTCLOUD)";
+        case 0x0501: return "配置网络参数 (NETWORK_CONFIG)";
+        case 0x0502: return "获取FPGA固件版本 (FPGA_VERSION)";
+        case 0x0503: return "设置/获取设备序列号 (DEVICE_SERIAL)";
         case 0x0020: return "远程更新请求 (UPDATE_REQUEST)";
         case 0x0021: return "远程更新控制 (UPDATE_CONTROL)";
         case 0x0022: return "远程更新数据 (UPDATE_DATA)";
@@ -73,7 +78,7 @@ ProtocolAnalyzerDialog::ProtocolAnalyzerDialog(QWidget* parent)
     m_text_input = new QPlainTextEdit();
     m_text_input->setPlaceholderText(
         "在此粘贴十六进制数据，如:\n"
-        "abab9cd000010001000000000012aa5500000503c1cb008000020000ac77fafab704dcdc");
+        "abab9cd0000100010000000000000014aa5500000503c1cb00800000000200008dfffafa7ae1dcdc");
     m_text_input->setMaximumHeight(80);
     QFont mono("Consolas", 10);
     m_text_input->setFont(mono);
@@ -250,6 +255,12 @@ QString ProtocolAnalyzerDialog::parse_inner_frame(const QByteArray& data) {
     auto read16 = [&](int offset) -> uint16_t {
         return (static_cast<uint8_t>(data[offset]) << 8) | static_cast<uint8_t>(data[offset + 1]);
     };
+    auto read32 = [&](int offset) -> uint32_t {
+        return (static_cast<uint32_t>(static_cast<uint8_t>(data[offset])) << 24) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 1])) << 16) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 2])) << 8) |
+               static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 3]));
+    };
 
     uint16_t header = read16(0);
     result += QString("<b>帧头:</b> 0x%1 (%2 %3)<br>")
@@ -264,8 +275,8 @@ QString ProtocolAnalyzerDialog::parse_inner_frame(const QByteArray& data) {
     }
     result += "  <span style='color:#ff6b6b;'>✓ 帧头正确</span><br>";
 
-    if (data.size() < 16) {
-        result += QString("<span style='color:#ff6b6b;'>[错误] 内部帧长度不足: %1 &lt; 最小 16</span><br>").arg(data.size());
+    if (data.size() < 18) {
+        result += QString("<span style='color:#ff6b6b;'>[错误] 内部帧长度不足: %1 &lt; 最小 18</span><br>").arg(data.size());
         return result;
     }
 
@@ -283,8 +294,8 @@ QString ProtocolAnalyzerDialog::parse_inner_frame(const QByteArray& data) {
     result += "  <span style='color:#ff6b6b;'>✓ 帧尾正确</span><br>";
 
     // CRC check
-    int data_len = read16(10);
-    int body_len = 12 + data_len;
+    int data_len = static_cast<int>(read32(10));
+    int body_len = 14 + data_len;
     if (body_len + 2 > data.size()) {
         result += "<span style='color:#ff6b6b;'>[错误] 数据长度字段超出实际帧长</span><br>";
         return result;
@@ -304,7 +315,7 @@ QString ProtocolAnalyzerDialog::parse_inner_frame(const QByteArray& data) {
     uint16_t msg_id = read16(6);
     uint8_t msg_type = static_cast<uint8_t>(data[8]);
     uint8_t rw = static_cast<uint8_t>(data[9]);
-    QByteArray payload_data = data.mid(12, data_len);
+    QByteArray payload_data = data.mid(14, data_len);
 
     const char* dev_name = (device_type <= 4) ? DEVICE_NAMES[device_type] : "未知设备";
 

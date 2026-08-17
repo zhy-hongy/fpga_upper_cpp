@@ -73,8 +73,11 @@ void ProtocolHandler::setup_connections() {
 
 void ProtocolHandler::on_raw_response(const QByteArray& raw) {
     // Check if it's a data packet
-    if (raw.size() >= 12) {
-        int data_len = (static_cast<uint8_t>(raw[10]) << 8) | static_cast<uint8_t>(raw[11]);
+    if (raw.size() >= 14) {
+        int data_len = (static_cast<uint8_t>(raw[10]) << 24) |
+                       (static_cast<uint8_t>(raw[11]) << 16) |
+                       (static_cast<uint8_t>(raw[12]) << 8) |
+                       static_cast<uint8_t>(raw[13]);
         if (data_len >= 1280) {
             m_data->feed_frame(raw);
             return;
@@ -359,11 +362,6 @@ void ProtocolHandler::read_gain(int sensor_id, std::function<void(const ControlF
     emit status_message("Read gain...");
 }
 
-void ProtocolHandler::read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    send_cmd(CMD_EXPOSURE_DELAY, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
-    emit status_message("Read exposure delay...");
-}
-
 void ProtocolHandler::read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> cb) {
     send_cmd(CMD_SAMPLE_RATE, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
     emit status_message("Read sample rate...");
@@ -397,26 +395,6 @@ void ProtocolHandler::read_external_trigger(int sensor_id, std::function<void(co
 void ProtocolHandler::read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> cb) {
     send_cmd(CMD_BATCH_LENGTH, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
     emit status_message("Read batch length...");
-}
-
-void ProtocolHandler::set_frame_rate(int fps, int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    QByteArray payload;
-    payload.append(static_cast<char>((fps >> 24) & 0xFF));
-    payload.append(static_cast<char>((fps >> 16) & 0xFF));
-    payload.append(static_cast<char>((fps >> 8) & 0xFF));
-    payload.append(static_cast<char>(fps & 0xFF));
-    send_cmd(CMD_FRAME_RATE, RW_WRITE, payload, sensor_id, cb);
-    emit status_message(QString("Set frame rate: %1 FPS").arg(fps));
-}
-
-void ProtocolHandler::set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    QByteArray payload;
-    payload.append(static_cast<char>((delay_us >> 24) & 0xFF));
-    payload.append(static_cast<char>((delay_us >> 16) & 0xFF));
-    payload.append(static_cast<char>((delay_us >> 8) & 0xFF));
-    payload.append(static_cast<char>(delay_us & 0xFF));
-    send_cmd(CMD_EXPOSURE_DELAY, RW_WRITE, payload, sensor_id, cb);
-    emit status_message(QString("Set exposure delay (Cam%1): %2 us").arg(sensor_id).arg(delay_us));
 }
 
 void ProtocolHandler::set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> cb) {
@@ -485,7 +463,8 @@ void ProtocolHandler::set_external_trigger(bool enabled, int sensor_id, std::fun
 }
 
 void ProtocolHandler::set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    QByteArray payload(2, '\x00');
+    // 0x0204 写数据 4B：高 2B 开关(0x0001 启动 / 0x0000 停止)，低 2B 批次序号(置 0)
+    QByteArray payload(4, '\x00');
     if (start) payload[1] = 0x01;
     send_cmd(CMD_BATCH_CONTROL, RW_WRITE, payload, sensor_id, cb);
     emit status_message(QString("Batch control (Cam%1): %2").arg(sensor_id).arg(start ? "Start" : "Stop"));
@@ -497,19 +476,70 @@ void ProtocolHandler::reset_buffer(int sensor_id, std::function<void(const Contr
 }
 
 void ProtocolHandler::start_capture(int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    send_cmd(CMD_START_STOP, RW_WRITE, QByteArray(2, '\x00'), sensor_id, cb);
+    // 采集/停止统一归入 0x0204 批处理控制（0x00010000 启动 / 0x00000000 停止）
+    send_cmd(CMD_BATCH_CONTROL, RW_WRITE, QByteArray("\x00\x01\x00\x00", 4), sensor_id, cb);
     emit status_message("Start capture");
 }
 
 void ProtocolHandler::stop_capture(int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    send_cmd(CMD_START_STOP, RW_WRITE, QByteArray(2, '\x00'), sensor_id, cb);
+    send_cmd(CMD_BATCH_CONTROL, RW_WRITE, QByteArray(4, '\x00'), sensor_id, cb);
     emit status_message("Stop capture");
+}
+
+void ProtocolHandler::read_camera_version(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_CAMERA_VERSION, RW_READ, QByteArray("\x00\x01", 2), sensor_id, cb);
+    emit status_message(QString("Read camera version (Cam%1)...").arg(sensor_id));
 }
 
 void ProtocolHandler::read_fpga_version(std::function<void(const ControlFrame&)> cb,
                                          std::function<void()> error_cb) {
-    send_cmd(CMD_READ_VERSION, RW_READ, QByteArray(2, '\x00'), DEV_FPGA, cb, error_cb);
+    send_cmd(CMD_FPGA_VERSION, RW_READ, QByteArray(2, '\x00'), DEV_FPGA, cb, error_cb);
     emit status_message("Read FPGA version...");
+}
+
+void ProtocolHandler::read_device_serial(std::function<void(const ControlFrame&)> cb,
+                                         std::function<void()> error_cb) {
+    send_cmd(CMD_DEVICE_SERIAL, RW_READ, QByteArray(2, '\x00'), DEV_FPGA, cb, error_cb);
+    emit status_message("Read device serial...");
+}
+
+void ProtocolHandler::set_device_serial(uint32_t serial, std::function<void(const ControlFrame&)> cb,
+                                         std::function<void()> error_cb) {
+    QByteArray payload(4, '\x00');
+    payload[0] = static_cast<char>((serial >> 24) & 0xFF);
+    payload[1] = static_cast<char>((serial >> 16) & 0xFF);
+    payload[2] = static_cast<char>((serial >> 8) & 0xFF);
+    payload[3] = static_cast<char>(serial & 0xFF);
+    send_cmd(CMD_DEVICE_SERIAL, RW_WRITE, payload, DEV_FPGA, cb, error_cb);
+    emit status_message(QString("Set device serial: %1").arg(serial));
+}
+
+void ProtocolHandler::read_network_config(std::function<void(const ControlFrame&)> cb,
+                                          std::function<void()> error_cb) {
+    send_cmd(CMD_NETWORK_CONFIG, RW_READ, QByteArray(2, '\x00'), DEV_FPGA, cb, error_cb);
+    emit status_message("Read network config...");
+}
+
+void ProtocolHandler::set_network_config(uint32_t dev_ip, uint32_t pc_ip, uint32_t mask, uint32_t gateway,
+                                         const uint8_t mac[6], std::function<void(const ControlFrame&)> cb,
+                                         std::function<void()> error_cb) {
+    // 0x0501 写数据 24B：设备IP(4) + 本机IP(4) + 掩码(4) + 网关(4) + 设备MAC(8, 前2B预留零+6B MAC)
+    QByteArray payload;
+    auto append_be32 = [&payload](uint32_t v) {
+        payload.append(static_cast<char>((v >> 24) & 0xFF));
+        payload.append(static_cast<char>((v >> 16) & 0xFF));
+        payload.append(static_cast<char>((v >> 8) & 0xFF));
+        payload.append(static_cast<char>(v & 0xFF));
+    };
+    append_be32(dev_ip);
+    append_be32(pc_ip);
+    append_be32(mask);
+    append_be32(gateway);
+    payload.append(static_cast<char>(0));  // MAC 前 2B 对齐预留，默认 0
+    payload.append(static_cast<char>(0));
+    for (int i = 0; i < 6; ++i) payload.append(static_cast<char>(mac[i]));
+    send_cmd(CMD_NETWORK_CONFIG, RW_WRITE, payload, DEV_FPGA, cb, error_cb);
+    emit status_message("Set network config...");
 }
 
 // ── Firmware upgrade ──

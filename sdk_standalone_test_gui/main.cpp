@@ -152,16 +152,15 @@ private slots:
         SensorConfig cfg{};
         cfg.exposureTime  = m_expSpin->value();
         cfg.gain          = m_gainSpin->value();
-        cfg.exposureDelay = m_delaySpin->value();
         cfg.sampleRate    = m_rateSpin->value();
 
         CamError e = Cam_SetSensorConfig(m_handle, sensor_id(), &cfg);
         if (e == CAM_OK) {
             m_sensorWritten = cfg;
             update_sensor_written_display();
-            log(QString("[Sensor %1] 写入成功: exp=%2 gain=%3 delay=%4 rate=%5")
+            log(QString("[Sensor %1] 写入成功: exp=%2 gain=%3 rate=%4")
                 .arg(sensor_id()).arg(cfg.exposureTime).arg(cfg.gain)
-                .arg(cfg.exposureDelay).arg(cfg.sampleRate));
+                .arg(cfg.sampleRate));
         } else {
             log(QString("[Sensor %1] 写入失败: err=%2").arg(sensor_id()).arg(e), true);
         }
@@ -174,9 +173,9 @@ private slots:
         if (e == CAM_OK) {
             m_sensorRead = cfg;
             update_sensor_read_display();
-            log(QString("[Sensor %1] 读取成功: exp=%2 gain=%3 delay=%4 rate=%5")
+            log(QString("[Sensor %1] 读取成功: exp=%2 gain=%3 rate=%4")
                 .arg(sensor_id()).arg(cfg.exposureTime).arg(cfg.gain)
-                .arg(cfg.exposureDelay).arg(cfg.sampleRate));
+                .arg(cfg.sampleRate));
         } else {
             log(QString("[Sensor %1] 读取失败: err=%2").arg(sensor_id()).arg(e), true);
         }
@@ -368,15 +367,14 @@ private slots:
         SensorConfig cfg{};
         cfg.exposureTime  = 9999;
         cfg.gain          = 999;
-        cfg.exposureDelay = 99;
         cfg.sampleRate    = 999;
 
         uint16_t sid = sensor_id();
-        log_with_time(QString("[发送] SetSensorConfigAsync sensor=%1 exp=%2 gain=%3 delay=%4 rate=%5 timeout=%6ms")
+        log_with_time(QString("[发送] SetSensorConfigAsync sensor=%1 exp=%2 gain=%3 rate=%4 timeout=%5ms")
             .arg(sid).arg(cfg.exposureTime).arg(cfg.gain)
-            .arg(cfg.exposureDelay).arg(cfg.sampleRate).arg(timeoutMs));
-        log_with_time("[状态] SetSensorConfig 内部会发送 4 条子命令 (exposure/gain/delay/rate)，"
-                      "每条都绑定独立的 ACK 回调，4 条全部超时后才触发最终 CAM_ERR_TIMEOUT");
+            .arg(cfg.sampleRate).arg(timeoutMs));
+        log_with_time("[状态] SetSensorConfig 内部会发送 3 条子命令 (exposure/gain/rate)，"
+                      "每条都绑定独立的 ACK 回调，3 条全部超时后才触发最终 CAM_ERR_TIMEOUT");
 
         CamError e = Cam_SetSensorConfigAsync(m_handle, sid, &cfg, static_cast<uint32_t>(timeoutMs),
                                               on_async_with_log, ar);
@@ -559,11 +557,9 @@ private:
         m_sensorWrittenLabel->setText(
             QString("exposureTime = %1 us\n"
                     "gain         = %2\n"
-                    "exposureDelay = %3 us\n"
-                    "sampleRate   = %4 Hz")
+                    "sampleRate   = %3 Hz")
             .arg(m_sensorWritten.exposureTime)
             .arg(m_sensorWritten.gain)
-            .arg(m_sensorWritten.exposureDelay)
             .arg(m_sensorWritten.sampleRate));
     }
 
@@ -571,11 +567,9 @@ private:
         m_sensorReadLabel->setText(
             QString("exposureTime = %1 us\n"
                     "gain         = %2\n"
-                    "exposureDelay = %3 us\n"
-                    "sampleRate   = %4 Hz")
+                    "sampleRate   = %3 Hz")
             .arg(m_sensorRead.exposureTime)
             .arg(m_sensorRead.gain)
-            .arg(m_sensorRead.exposureDelay)
             .arg(m_sensorRead.sampleRate));
         // 颜色标记：匹配绿色，不匹配红色
         update_sensor_match_highlight();
@@ -584,7 +578,6 @@ private:
     void update_sensor_match_highlight() {
         bool match = (m_sensorWritten.exposureTime  == m_sensorRead.exposureTime &&
                       m_sensorWritten.gain          == m_sensorRead.gain &&
-                      m_sensorWritten.exposureDelay == m_sensorRead.exposureDelay &&
                       m_sensorWritten.sampleRate    == m_sensorRead.sampleRate);
         QString color = match ? "#2e7d32" : "#c62828";
         m_sensorReadLabel->setStyleSheet(
@@ -704,16 +697,11 @@ private:
         m_gainSpin->setRange(0, 999999);
         m_gainSpin->setValue(320);
         sensorCfgLayout->addWidget(m_gainSpin, 0, 3);
-        sensorCfgLayout->addWidget(new QLabel("曝光延迟 (us):"), 1, 0);
-        m_delaySpin = new QSpinBox();
-        m_delaySpin->setRange(0, 9999999);
-        m_delaySpin->setValue(20);
-        sensorCfgLayout->addWidget(m_delaySpin, 1, 1);
-        sensorCfgLayout->addWidget(new QLabel("采样率 (Hz):"), 1, 2);
+        sensorCfgLayout->addWidget(new QLabel("采样率 (Hz):"), 1, 0);
         m_rateSpin = new QSpinBox();
         m_rateSpin->setRange(0, 999999);
         m_rateSpin->setValue(150);
-        sensorCfgLayout->addWidget(m_rateSpin, 1, 3);
+        sensorCfgLayout->addWidget(m_rateSpin, 1, 1);
         auto* sensorBtnLayout = new QHBoxLayout();
         sensorBtnLayout->addStretch();
         auto* sensorWriteBtn = new QPushButton("写入");
@@ -940,7 +928,6 @@ private:
     // Sensor 配置输入
     QSpinBox* m_expSpin = nullptr;
     QSpinBox* m_gainSpin = nullptr;
-    QSpinBox* m_delaySpin = nullptr;
     QSpinBox* m_rateSpin = nullptr;
 
     // 触发配置输入

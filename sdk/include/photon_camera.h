@@ -106,11 +106,10 @@ struct SensorInformation {
 // Sensor 配置
 // 注意：ROI 字段 (roiStart, roiWidth) 和物理测量字段 (pixelPitch, zMin, zMax)
 // 当前版本暂不支持，设置这些字段为非零值将返回 CAM_ERR_NOT_SUPPORTED。
-// 支持的字段：exposureTime, gain, exposureDelay, sampleRate。
+// 支持的字段：exposureTime, gain, sampleRate。
 struct SensorConfig {
     uint32_t exposureTime;          // 曝光时间 (微秒)
     uint32_t gain;                  // 增益
-    uint32_t exposureDelay;         // 曝光延迟 (微秒)
 
     uint16_t roiStart;              // ROI 起始列（暂不支持，请置 0）
     uint16_t roiWidth;              // ROI 宽度（暂不支持，请置 0）
@@ -253,6 +252,31 @@ CAM_API CamError CAM_CALL Cam_GetDeviceInformation(CameraHandle handle, DeviceIn
 // 获取设备当前运行状态。
 CAM_API CamError CAM_CALL Cam_GetRunState(CameraHandle handle, DeviceRunState* pState);
 
+// 获取 FPGA 固件版本（0x0502），格式 "A.B.C.D"（如 "1.0.0.1"）。
+//   outVer   : [out] 版本字符串缓冲区
+//   bufSize  : outVer 缓冲区大小（建议 ≥ 16）
+CAM_API CamError CAM_CALL Cam_GetFpgaVersion(CameraHandle handle, char* outVer, uint32_t bufSize);
+
+// 获取相机固件版本（0x0007），格式 "A.B.C.D"。
+//   sensorId : Sensor 编号 (1~4)
+CAM_API CamError CAM_CALL Cam_GetCameraVersion(CameraHandle handle, uint16_t sensorId, char* outVer, uint32_t bufSize);
+
+// 获取设备序列号（0x0503 读）。
+//   pSerial  : [out] 设备序列号
+CAM_API CamError CAM_CALL Cam_GetDeviceSerial(CameraHandle handle, uint32_t* pSerial);
+
+// 设置设备序列号（0x0503 写）。
+//   serial   : 要烧录的设备序列号
+CAM_API CamError CAM_CALL Cam_SetDeviceSerial(CameraHandle handle, uint32_t serial);
+
+// 获取网络参数（0x0501 读）：FPGA 端 IP、本机 IP、掩码、网关、MAC。
+//   pCfg     : [out] 网络配置
+CAM_API CamError CAM_CALL Cam_GetNetworkConfig(CameraHandle handle, EthernetConfig* pCfg);
+
+// 设置网络参数（0x0501 写）。
+//   pCfg     : 要写入的网络配置
+CAM_API CamError CAM_CALL Cam_SetNetworkConfig(CameraHandle handle, const EthernetConfig* pCfg);
+
 // ── 5.5 Sensor 信息 ───────────────────────────────────────────────────
 
 // 获取在线 Sensor 数量。当前架构固定为 4 个 Sensor 槽位。
@@ -266,14 +290,14 @@ CAM_API CamError CAM_CALL Cam_GetSensorInformation(CameraHandle handle, uint16_t
 // ── 5.6 Sensor 配置 ───────────────────────────────────────────────────
 
 // 写入 Sensor 配置（曝光、增益、采样率等）。
-// 一次调用会依次设置 exposureTime、gain、exposureDelay、sampleRate。
+// 一次调用会依次设置 exposureTime、gain、sampleRate。
 // 注意：ROI 和物理测量字段当前不支持，如非零则返回 CAM_ERR_NOT_SUPPORTED。
 //   sensorId : Sensor 编号 (1~4)
 //   pConfig  : 要写入的配置（调用方分配内存）
 CAM_API CamError CAM_CALL Cam_SetSensorConfig(CameraHandle handle, uint16_t sensorId, const SensorConfig* pConfig);
 
 // 读取 Sensor 当前配置。
-// 读取的字段：exposureTime、gain、exposureDelay、sampleRate。
+// 读取的字段：exposureTime、gain、sampleRate。
 // ROI 和物理测量字段保持调用方传入的初值不变。
 //   sensorId : Sensor 编号 (1~4)
 //   pConfig  : [out] 读回的配置（调用方分配内存）

@@ -74,7 +74,6 @@ private slots:
     void on_read_params();
     void on_read_exp_done(const ControlFrame& frame);
     void on_read_gain_done(const ControlFrame& frame);
-    void on_send_exp_delay();
 
     // Trigger
     void on_trigger_mode_changed(int index);
@@ -145,7 +144,6 @@ private:
     void build_3d_interval_group(QVBoxLayout* parent);
     void build_work_mode_group(QVBoxLayout* parent);
     void build_cam_group(QVBoxLayout* parent);
-    void build_exposure_delay_group(QVBoxLayout* parent);
     void build_measure_range_group(QVBoxLayout* parent);
     void build_image_enhance_group(QVBoxLayout* parent);
     void build_image_display_group(QVBoxLayout* parent);
@@ -249,9 +247,6 @@ private:
     QSpinBox* m_gain_spin = nullptr;
     QPushButton* m_btn_apply = nullptr;
     QPushButton* m_btn_read = nullptr;
-    QGroupBox* m_exp_delay_group = nullptr;
-    QVector<QSpinBox*> m_exp_delay_spins;
-    QPushButton* m_btn_exp_delay_send = nullptr;
 
     // System tab
     QLineEdit* m_edit_fpga = nullptr;

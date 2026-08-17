@@ -113,11 +113,17 @@ void UDPDataThread::handle_frame(const QByteArray& raw) {
         return (static_cast<uint8_t>(raw[offset]) << 8) |
                static_cast<uint8_t>(raw[offset + 1]);
     };
+    auto read32 = [&](int offset) -> uint32_t {
+        return (static_cast<uint32_t>(static_cast<uint8_t>(raw[offset])) << 24) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(raw[offset + 1])) << 16) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(raw[offset + 2])) << 8) |
+               static_cast<uint32_t>(static_cast<uint8_t>(raw[offset + 3]));
+    };
 
     int dev = read16(2);
     int cmd = read16(4);
     int pkt_id = read16(6);
-    int data_len = read16(10);
+    int data_len = static_cast<int>(read32(10));
 
     if (data_len < DATA_PER_PACKET) {
         // 数据线程不处理控制帧——控制帧的 ACK 通过 UDPWorker（控制端口）接收。
@@ -131,7 +137,7 @@ void UDPDataThread::handle_frame(const QByteArray& raw) {
     if (!valid_sensor) return;
 
     SensorAssembly& asm_ = m_assemblies[dev];
-    QByteArray payload = raw.mid(12, data_len);
+    QByteArray payload = raw.mid(14, data_len);
 
     // Check if first packet (with F05AA50F header)
     bool is_first = (data_len >= FIRST_PACKET_EXTRA &&

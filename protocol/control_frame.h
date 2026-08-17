@@ -26,23 +26,25 @@ constexpr int DEV_SENSOR2 = 0x0002;
 constexpr int DEV_SENSOR3 = 0x0003;
 constexpr int DEV_SENSOR4 = 0x0004;
 
-// Command codes
-constexpr int CMD_EXPOSURE_TIME = 0x0001;
-constexpr int CMD_GAIN = 0x0002;
-constexpr int CMD_READ_VERSION = 0x0503;
-constexpr int CMD_FRAME_RATE = 0x0007;
-constexpr int CMD_EXPOSURE_DELAY = 0x0003;
-constexpr int CMD_SAMPLE_RATE = 0x000A;
-constexpr int CMD_TRIGGER_MODE = 0x0101;
-constexpr int CMD_ENCODER_TYPE = 0x0102;
-constexpr int CMD_ENCODER_MODE = 0x0103;
+// Command codes（对齐 protocol/通讯协议.md）
+// 注意：0x0011 START_STOP 已从协议删除，采集/停止统一归入 CMD_BATCH_CONTROL(0x0204)。
+constexpr int CMD_EXPOSURE_TIME  = 0x0001;
+constexpr int CMD_GAIN           = 0x0002;
+constexpr int CMD_ROI_X          = 0x0003;   // 设置/获取X轴Roi（当前 SDK 未实现，仅供协议分析器识别）
+constexpr int CMD_CAMERA_VERSION = 0x0007;   // 获取相机固件版本
+constexpr int CMD_SAMPLE_RATE    = 0x000A;
+constexpr int CMD_TRIGGER_MODE   = 0x0101;
+constexpr int CMD_ENCODER_TYPE   = 0x0102;
+constexpr int CMD_ENCODER_MODE   = 0x0103;
 constexpr int CMD_ENCODER_INTERVAL = 0x0104;
-constexpr int CMD_BATCH_LENGTH = 0x0201;
+constexpr int CMD_BATCH_LENGTH   = 0x0201;
 constexpr int CMD_GET_BATCH_DATA = 0x0202;
 constexpr int CMD_EXTERNAL_TRIGGER = 0x0203;
-constexpr int CMD_BATCH_CONTROL = 0x0204;
-constexpr int CMD_RESET_BUFFER = 0x0205;
-constexpr int CMD_START_STOP = 0x0011;
+constexpr int CMD_BATCH_CONTROL  = 0x0204;
+constexpr int CMD_RESET_BUFFER   = 0x0205;
+constexpr int CMD_NETWORK_CONFIG = 0x0501;   // 配置/获取网络参数
+constexpr int CMD_FPGA_VERSION   = 0x0502;   // 获取 FPGA 固件版本
+constexpr int CMD_DEVICE_SERIAL  = 0x0503;   // 设置/获取设备序列号
 
 // Remote firmware upgrade
 constexpr int CMD_REMOTE_UPDATE_REQUEST = 0x0020;

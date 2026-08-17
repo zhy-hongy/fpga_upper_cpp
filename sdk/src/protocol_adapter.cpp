@@ -6,6 +6,7 @@
 #include <QThread>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <future>
 #include <memory>
 
@@ -103,11 +104,6 @@ CamError ProtocolAdapter::set_sensor_config(uint16_t sensorId, const SensorConfi
     });
     if (e != CAM_OK) return e;
 
-    e = invoke_and_wait([this, sensorId, v = cfg.exposureDelay](const AckCb& cb) {
-        m_protocol->set_exposure_delay(static_cast<int>(v), sensorId, cb);
-    });
-    if (e != CAM_OK) return e;
-
     return invoke_and_wait([this, sensorId, v = cfg.sampleRate](const AckCb& cb) {
         m_protocol->set_sample_rate(static_cast<int>(v), sensorId, cb);
     });
@@ -128,12 +124,6 @@ CamError ProtocolAdapter::get_sensor_config(uint16_t sensorId, SensorConfig& cfg
     }, &data);
     if (e != CAM_OK) return e;
     cfg.gain = be32(data);
-
-    e = invoke_and_wait([this, sensorId](const AckCb& cb) {
-        m_protocol->read_exposure_delay(sensorId, cb);
-    }, &data);
-    if (e != CAM_OK) return e;
-    cfg.exposureDelay = be32(data);
 
     e = invoke_and_wait([this, sensorId](const AckCb& cb) {
         m_protocol->read_sample_rate(sensorId, cb);
@@ -315,6 +305,85 @@ CamError ProtocolAdapter::get_batch_data(uint16_t sensorId) {
 }
 
 // =========================================================================
+// 设备信息读取（0x0007/0x0501/0x0502/0x0503，全走 Dev=FPGA 或 sensor）
+// =========================================================================
+
+static void format_version(char* outVer, uint32_t bufSize, const QByteArray& data) {
+    if (data.size() >= 4) {
+        snprintf(outVer, bufSize, "%u.%u.%u.%u",
+                 static_cast<unsigned>(static_cast<uint8_t>(data[0])),
+                 static_cast<unsigned>(static_cast<uint8_t>(data[1])),
+                 static_cast<unsigned>(static_cast<uint8_t>(data[2])),
+                 static_cast<unsigned>(static_cast<uint8_t>(data[3])));
+    } else if (bufSize > 0) {
+        outVer[0] = '\0';
+    }
+}
+
+CamError ProtocolAdapter::get_fpga_version(char* outVer, uint32_t bufSize) {
+    if (!outVer || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    QByteArray data;
+    CamError e = invoke_and_wait([this](const AckCb& cb) {
+        m_protocol->read_fpga_version(cb);
+    }, &data);
+    if (e != CAM_OK) return e;
+    format_version(outVer, bufSize, data);
+    return CAM_OK;
+}
+
+CamError ProtocolAdapter::get_camera_version(uint16_t sensorId, char* outVer, uint32_t bufSize) {
+    if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
+    if (!outVer || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    QByteArray data;
+    CamError e = invoke_and_wait([this, sensorId](const AckCb& cb) {
+        m_protocol->read_camera_version(sensorId, cb);
+    }, &data);
+    if (e != CAM_OK) return e;
+    format_version(outVer, bufSize, data);
+    return CAM_OK;
+}
+
+CamError ProtocolAdapter::get_device_serial(uint32_t* pSerial) {
+    if (!pSerial) return CAM_ERR_INVALID_PARAM;
+    QByteArray data;
+    CamError e = invoke_and_wait([this](const AckCb& cb) {
+        m_protocol->read_device_serial(cb);
+    }, &data);
+    if (e != CAM_OK) return e;
+    *pSerial = be32(data);
+    return CAM_OK;
+}
+
+CamError ProtocolAdapter::set_device_serial(uint32_t serial) {
+    return invoke_and_wait([this, serial](const AckCb& cb) {
+        m_protocol->set_device_serial(serial, cb);
+    });
+}
+
+CamError ProtocolAdapter::get_network_config(EthernetConfig* pCfg) {
+    if (!pCfg) return CAM_ERR_INVALID_PARAM;
+    QByteArray data;
+    CamError e = invoke_and_wait([this](const AckCb& cb) {
+        m_protocol->read_network_config(cb);
+    }, &data);
+    if (e != CAM_OK) return e;
+    if (data.size() < 24) return CAM_ERR_UNKNOWN;
+    pCfg->deviceIp   = be32(data.mid(0, 4));
+    pCfg->pcIp       = be32(data.mid(4, 4));
+    pCfg->subnetMask = be32(data.mid(8, 4));
+    pCfg->gateway    = be32(data.mid(12, 4));
+    for (int i = 0; i < 6; ++i) pCfg->mac[i] = static_cast<uint8_t>(data[18 + i]);  // 跳过 MAC 前 2B 预留
+    return CAM_OK;
+}
+
+CamError ProtocolAdapter::set_network_config(const EthernetConfig* pCfg) {
+    if (!pCfg) return CAM_ERR_INVALID_PARAM;
+    return invoke_and_wait([this, c = *pCfg](const AckCb& cb) {
+        m_protocol->set_network_config(c.deviceIp, c.pcIp, c.subnetMask, c.gateway, c.mac, cb);
+    });
+}
+
+// =========================================================================
 // 异步非阻塞控制 API 转发（立即返回 CAM_PENDING）
 // =========================================================================
 
@@ -384,14 +453,13 @@ CamError ProtocolAdapter::set_sensor_config_async(uint16_t sensorId, const Senso
         return CAM_ERR_NOT_SUPPORTED;
     }
     return post_async([this, sensorId, v = cfg.exposureTime, g = cfg.gain,
-                       d = cfg.exposureDelay, s = cfg.sampleRate](uint16_t id) {
-        auto state = std::make_shared<std::atomic<int>>(4);
+                       s = cfg.sampleRate](uint16_t id) {
+        auto state = std::make_shared<std::atomic<int>>(3);
         auto done = [this, id, state]() {
             if (state->fetch_sub(1) == 1) m_cmdMgr->ack(id);
         };
         m_protocol->set_exposure(static_cast<int>(v), sensorId, [done](const ControlFrame&) { done(); });
         m_protocol->set_gain(static_cast<int>(g), sensorId, [done](const ControlFrame&) { done(); });
-        m_protocol->set_exposure_delay(static_cast<int>(d), sensorId, [done](const ControlFrame&) { done(); });
         m_protocol->set_sample_rate(static_cast<int>(s), sensorId, [done](const ControlFrame&) { done(); });
     }, cb, userData, timeoutMs);
 }
@@ -402,13 +470,12 @@ CamError ProtocolAdapter::get_sensor_config_async(uint16_t sensorId, SensorConfi
     if (!valid_sensor(sensorId)) return CAM_ERR_INVALID_PARAM;
     if (!out) return CAM_ERR_INVALID_PARAM;
     return post_async([this, sensorId, out](uint16_t id) {
-        auto state = std::make_shared<std::atomic<int>>(4);
+        auto state = std::make_shared<std::atomic<int>>(3);
         auto done = [this, id, state]() {
             if (state->fetch_sub(1) == 1) m_cmdMgr->ack(id);
         };
         m_protocol->read_exposure(sensorId, [out, done](const ControlFrame& f) { out->exposureTime = be32(f.data); done(); });
         m_protocol->read_gain(sensorId, [out, done](const ControlFrame& f) { out->gain = be32(f.data); done(); });
-        m_protocol->read_exposure_delay(sensorId, [out, done](const ControlFrame& f) { out->exposureDelay = be32(f.data); done(); });
         m_protocol->read_sample_rate(sensorId, [out, done](const ControlFrame& f) { out->sampleRate = be32(f.data); done(); });
     }, cb, userData, timeoutMs);
 }

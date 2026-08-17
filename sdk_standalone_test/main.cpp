@@ -91,18 +91,75 @@ static void run_udp_tests(CameraHandle h) {
               "status=" + std::to_string(devInfo.status));
     }
 
+    // ── 设备信息：FPGA版本 / 相机版本 / 序列号 / 网络参数（0x0502/0x0007/0x0503/0x0501）──
+    {
+        char ver[32] = {0};
+        CamError e = Cam_GetFpgaVersion(h, ver, sizeof(ver));
+        check("GetFpgaVersion", e == CAM_OK, "-> " + std::to_string(e));
+        std::printf("  FPGA version: %s\n", ver);
+        check("  fpga version == 1.0.0.1", e != CAM_OK || std::strcmp(ver, "1.0.0.1") == 0,
+              "got '" + std::string(ver) + "'");
+
+        char cver[32] = {0};
+        e = Cam_GetCameraVersion(h, 1, cver, sizeof(cver));
+        check("GetCameraVersion(sensor=1)", e == CAM_OK, "-> " + std::to_string(e));
+        std::printf("  camera version: %s\n", cver);
+        check("  camera version == 1.0.0.1", e != CAM_OK || std::strcmp(cver, "1.0.0.1") == 0,
+              "got '" + std::string(cver) + "'");
+
+        uint32_t serial = 0;
+        e = Cam_GetDeviceSerial(h, &serial);
+        {
+            char sbuf[16];
+            std::snprintf(sbuf, sizeof(sbuf), "0x%08X", serial);
+            check("GetDeviceSerial", e == CAM_OK && serial == 0x12345678,
+                  "-> " + std::to_string(e) + " serial=" + sbuf);
+        }
+        e = Cam_SetDeviceSerial(h, 0x12345678);
+        check("SetDeviceSerial", e == CAM_OK, "-> " + std::to_string(e));
+
+        EthernetConfig nw{};
+        e = Cam_GetNetworkConfig(h, &nw);
+        check("GetNetworkConfig", e == CAM_OK, "-> " + std::to_string(e));
+        if (e == CAM_OK) {
+            check("  deviceIp=192.168.10.10", nw.deviceIp == 0xC0A80A0A,
+                  "got 0x" + std::to_string(nw.deviceIp));
+            check("  pcIp=192.168.10.100", nw.pcIp == 0xC0A80A64,
+                  "got 0x" + std::to_string(nw.pcIp));
+            check("  subnetMask=255.255.255.0", nw.subnetMask == 0xFFFFFF00,
+                  "got 0x" + std::to_string(nw.subnetMask));
+            check("  gateway=192.168.10.1", nw.gateway == 0xC0A80A01,
+                  "got 0x" + std::to_string(nw.gateway));
+            check("  mac=00:00:02:00:00:01",
+                  nw.mac[0] == 0x00 && nw.mac[1] == 0x00 && nw.mac[2] == 0x02 &&
+                  nw.mac[3] == 0x00 && nw.mac[4] == 0x00 && nw.mac[5] == 0x01,
+                  "got " + std::to_string(nw.mac[0]) + ":" + std::to_string(nw.mac[1]) + ":" +
+                  std::to_string(nw.mac[2]) + ":" + std::to_string(nw.mac[3]) + ":" +
+                  std::to_string(nw.mac[4]) + ":" + std::to_string(nw.mac[5]));
+        }
+
+        EthernetConfig nw2{};
+        nw2.deviceIp   = 0xC0A80A0B;   // 192.168.10.11
+        nw2.pcIp       = 0xC0A80A64;
+        nw2.subnetMask = 0xFFFFFF00;
+        nw2.gateway    = 0xC0A80A01;
+        nw2.mac[0] = 0x00; nw2.mac[1] = 0x00; nw2.mac[2] = 0x02;
+        nw2.mac[3] = 0x00; nw2.mac[4] = 0x00; nw2.mac[5] = 0x02;
+        e = Cam_SetNetworkConfig(h, &nw2);
+        check("SetNetworkConfig", e == CAM_OK, "-> " + std::to_string(e));
+    }
+
     // ── Sensor 配置：写后读验证 ──
     {
         SensorConfig writeCfg{};
         writeCfg.exposureTime  = 5000;
         writeCfg.gain          = 320;
-        writeCfg.exposureDelay = 20;
         writeCfg.sampleRate    = 150;
         // ROI 和物理字段置零（不支持）
 
         CamError e = Cam_SetSensorConfig(h, 1, &writeCfg);
         check("SetSensorConfig (sensor=1)", e == CAM_OK,
-              "exposure=5000 gain=320 delay=20 rate=150 -> " + std::to_string(e));
+              "exposure=5000 gain=320 rate=150 -> " + std::to_string(e));
 
         SensorConfig readCfg{};
         e = Cam_GetSensorConfig(h, 1, &readCfg);
@@ -111,8 +168,6 @@ static void run_udp_tests(CameraHandle h) {
               "got " + std::to_string(readCfg.exposureTime));
         check("  gain=320", readCfg.gain == 320,
               "got " + std::to_string(readCfg.gain));
-        check("  exposureDelay=20", readCfg.exposureDelay == 20,
-              "got " + std::to_string(readCfg.exposureDelay));
         check("  sampleRate=150", readCfg.sampleRate == 150,
               "got " + std::to_string(readCfg.sampleRate));
     }
@@ -334,7 +389,6 @@ static void run_async_timeout_tests(CameraHandle h) {
         SensorConfig cfg{};
         cfg.exposureTime  = 9999;
         cfg.gain          = 999;
-        cfg.exposureDelay = 99;
         cfg.sampleRate    = 999;
 
         CamError e = Cam_SetSensorConfigAsync(h, 1, &cfg, 1000, on_async, &ar);
@@ -414,6 +468,60 @@ static void run_async_timeout_tests(CameraHandle h) {
 
 static void run_mock_tests(CameraHandle h) {
     std::printf("\n--- Mock 模式测试 ---\n\n");
+
+    // ── 设备信息：FPGA版本 / 相机版本 / 序列号 / 网络参数（0x0502/0x0007/0x0503/0x0501）──
+    {
+        char ver[32] = {0};
+        CamError e = Cam_GetFpgaVersion(h, ver, sizeof(ver));
+        check("Mock GetFpgaVersion", e == CAM_OK, "-> " + std::to_string(e));
+        std::printf("  FPGA version: %s\n", ver);
+        check("  fpga version == 1.0.0.1", e != CAM_OK || std::strcmp(ver, "1.0.0.1") == 0,
+              "got '" + std::string(ver) + "'");
+
+        char cver[32] = {0};
+        e = Cam_GetCameraVersion(h, 1, cver, sizeof(cver));
+        check("Mock GetCameraVersion(sensor=1)", e == CAM_OK, "-> " + std::to_string(e));
+        std::printf("  camera version: %s\n", cver);
+        check("  camera version == 1.0.0.1", e != CAM_OK || std::strcmp(cver, "1.0.0.1") == 0,
+              "got '" + std::string(cver) + "'");
+
+        uint32_t serial = 0;
+        e = Cam_GetDeviceSerial(h, &serial);
+        check("Mock GetDeviceSerial", e == CAM_OK && serial == 0x12345678,
+              "-> " + std::to_string(e));
+        e = Cam_SetDeviceSerial(h, 0x12345678);
+        check("Mock SetDeviceSerial", e == CAM_OK, "-> " + std::to_string(e));
+
+        EthernetConfig nw{};
+        e = Cam_GetNetworkConfig(h, &nw);
+        check("Mock GetNetworkConfig", e == CAM_OK, "-> " + std::to_string(e));
+        if (e == CAM_OK) {
+            check("  deviceIp=192.168.10.10", nw.deviceIp == 0xC0A80A0A,
+                  "got 0x" + std::to_string(nw.deviceIp));
+            check("  pcIp=192.168.10.100", nw.pcIp == 0xC0A80A64,
+                  "got 0x" + std::to_string(nw.pcIp));
+            check("  subnetMask=255.255.255.0", nw.subnetMask == 0xFFFFFF00,
+                  "got 0x" + std::to_string(nw.subnetMask));
+            check("  gateway=192.168.10.1", nw.gateway == 0xC0A80A01,
+                  "got 0x" + std::to_string(nw.gateway));
+            check("  mac=00:00:02:00:00:01",
+                  nw.mac[0] == 0x00 && nw.mac[1] == 0x00 && nw.mac[2] == 0x02 &&
+                  nw.mac[3] == 0x00 && nw.mac[4] == 0x00 && nw.mac[5] == 0x01,
+                  "got " + std::to_string(nw.mac[0]) + ":" + std::to_string(nw.mac[1]) + ":" +
+                  std::to_string(nw.mac[2]) + ":" + std::to_string(nw.mac[3]) + ":" +
+                  std::to_string(nw.mac[4]) + ":" + std::to_string(nw.mac[5]));
+        }
+
+        EthernetConfig nw2{};
+        nw2.deviceIp   = 0xC0A80A0B;   // 192.168.10.11
+        nw2.pcIp       = 0xC0A80A64;
+        nw2.subnetMask = 0xFFFFFF00;
+        nw2.gateway    = 0xC0A80A01;
+        nw2.mac[0] = 0x00; nw2.mac[1] = 0x00; nw2.mac[2] = 0x02;
+        nw2.mac[3] = 0x00; nw2.mac[4] = 0x00; nw2.mac[5] = 0x02;
+        e = Cam_SetNetworkConfig(h, &nw2);
+        check("Mock SetNetworkConfig", e == CAM_OK, "-> " + std::to_string(e));
+    }
 
     // StartCaptureAsync
     AsyncResult ack;

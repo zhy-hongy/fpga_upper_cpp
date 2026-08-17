@@ -226,12 +226,11 @@ void SDKTest::run() {
     SensorConfig sc{};
     e = api("Cam_GetSensorConfig", [&] { return Cam_GetSensorConfig(handle, 1, &sc); });
     if (e == CAM_OK) {
-        log_line(QString("   exposure=%1  gain=%2  expDelay=%3  sampleRate=%4")
-                     .arg(sc.exposureTime).arg(sc.gain).arg(sc.exposureDelay).arg(sc.sampleRate));
+        log_line(QString("   exposure=%1  gain=%2  sampleRate=%3")
+                     .arg(sc.exposureTime).arg(sc.gain).arg(sc.sampleRate));
         if (m_mock_mode) {
             const bool ok = sc.exposureTime == uint32_t(m_mock->default_exposure()) &&
                             sc.gain == uint32_t(m_mock->default_gain()) &&
-                            sc.exposureDelay == uint32_t(m_mock->default_exposure_delay()) &&
                             sc.sampleRate == uint32_t(m_mock->default_sample_rate());
             log_line(QString("   [验证] Get 与 Mock 默认一致: %1").arg(ok ? "是" : "否！"));
         }
@@ -239,7 +238,7 @@ void SDKTest::run() {
     if (m_mock_mode && m_mock) {
         verify_sent_cmds("Cam_GetSensorConfig",
                          {rd(CMD_EXPOSURE_TIME), rd(CMD_GAIN),
-                          rd(CMD_EXPOSURE_DELAY), rd(CMD_SAMPLE_RATE)});
+                          rd(CMD_SAMPLE_RATE)});
     }
     TriggerConfig tc{};
     e = api("Cam_GetTriggerConfig", [&] { return Cam_GetTriggerConfig(handle, 1, &tc); });
@@ -278,13 +277,12 @@ void SDKTest::run() {
     // 8) Set 配置：写命令立即 ACK 成功（roi/pixelPitch/z 等无协议字段必须保持 0）
     log_line("── Set 配置（写命令应立即 ACK 成功，<100ms）──");
     SensorConfig setSc{};
-    setSc.exposureTime = 2000; setSc.gain = 3; setSc.exposureDelay = 100; setSc.sampleRate = 3000;
+    setSc.exposureTime = 2000; setSc.gain = 3; setSc.sampleRate = 3000;
     e = api("Cam_SetSensorConfig", [&] { return Cam_SetSensorConfig(handle, 1, &setSc); });
     if (m_mock_mode && m_mock) {
         verify_sent_cmds("Cam_SetSensorConfig",
                          {wr(CMD_EXPOSURE_TIME, be32v(2000)),
                           wr(CMD_GAIN, be32v(3)),
-                          wr(CMD_EXPOSURE_DELAY, be32v(100)),
                           wr(CMD_SAMPLE_RATE, be32v(3000))});
     }
     TriggerConfig setTc{};
@@ -309,7 +307,7 @@ void SDKTest::run() {
     // 9) 开始采集：Mock 覆盖立即 ACK + 启动 40ms 帧生成
     e = api("Cam_StartCapture(1)", [&] { return Cam_StartCapture(handle, 1); });
     if (m_mock_mode && m_mock) {
-        verify_sent_cmds("Cam_StartCapture(1)", {wr(CMD_START_STOP, QByteArray(2, '\0'))});
+        verify_sent_cmds("Cam_StartCapture(1)", {wr(CMD_BATCH_CONTROL, be32v(0x00010000))});
     }
     if (e == CAM_OK) {
         // 10) 收集 DataHandler 回调约 2 秒
@@ -347,7 +345,7 @@ void SDKTest::run() {
     // 12) 停止采集：Mock 覆盖立即 ACK + 停止帧生成
     e = api("Cam_StopCapture(1)", [&] { return Cam_StopCapture(handle, 1); });
     if (m_mock_mode && m_mock) {
-        verify_sent_cmds("Cam_StopCapture(1)", {wr(CMD_START_STOP, QByteArray(2, '\0'))});
+        verify_sent_cmds("Cam_StopCapture(1)", {wr(CMD_BATCH_CONTROL, be32v(0x00000000))});
     }
     if (m_mock_mode) {
         log_line(QString("[MOCK] Mock 本次共生成 %1 帧").arg(m_mock->generated_frames()));
@@ -431,11 +429,10 @@ void SDKTest::run() {
             const bool waited = wait_async_result(r, 3000);
             const bool dataOk = (asc.exposureTime == uint32_t(m_mock->default_exposure()) &&
                                  asc.gain == uint32_t(m_mock->default_gain()) &&
-                                 asc.exposureDelay == uint32_t(m_mock->default_exposure_delay()) &&
                                  asc.sampleRate == uint32_t(m_mock->default_sample_rate()));
-            log_line(QString("  [异步Get] command=GET_SENSOR_CONFIG result=%1 commandId=%2 exposure=%3 gain=%4 expDelay=%5 sampleRate=%6 waited=%7（数据与 Mock 默认一致: %8）")
+            log_line(QString("  [异步Get] command=GET_SENSOR_CONFIG result=%1 commandId=%2 exposure=%3 gain=%4 sampleRate=%5 waited=%6（数据与 Mock 默认一致: %7）")
                          .arg(int(r.result)).arg(r.commandId)
-                         .arg(asc.exposureTime).arg(asc.gain).arg(asc.exposureDelay).arg(asc.sampleRate)
+                         .arg(asc.exposureTime).arg(asc.gain).arg(asc.sampleRate)
                          .arg(waited ? "是" : "否！")
                          .arg(dataOk ? "是" : "否！"));
             log_line(QString("  [验证] GetSensorConfigAsync 路径: %1")

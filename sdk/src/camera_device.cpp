@@ -347,6 +347,56 @@ CAM_API CamError CAM_CALL Cam_GetRunState(CameraHandle handle, DeviceRunState* p
     return CAM_OK;
 }
 
+// ── 设备信息读取（0x0007/0x0501/0x0502/0x0503）──────────────────────────
+
+CAM_API CamError CAM_CALL Cam_GetFpgaVersion(CameraHandle handle, char* outVer, uint32_t bufSize) {
+    if (!outVer || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    return dev->adapter()->get_fpga_version(outVer, bufSize);
+}
+
+CAM_API CamError CAM_CALL Cam_GetCameraVersion(CameraHandle handle, uint16_t sensorId,
+                                               char* outVer, uint32_t bufSize) {
+    if (!outVer || bufSize == 0) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    return dev->adapter()->get_camera_version(sensorId, outVer, bufSize);
+}
+
+CAM_API CamError CAM_CALL Cam_GetDeviceSerial(CameraHandle handle, uint32_t* pSerial) {
+    if (!pSerial) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    return dev->adapter()->get_device_serial(pSerial);
+}
+
+CAM_API CamError CAM_CALL Cam_SetDeviceSerial(CameraHandle handle, uint32_t serial) {
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    return dev->adapter()->set_device_serial(serial);
+}
+
+CAM_API CamError CAM_CALL Cam_GetNetworkConfig(CameraHandle handle, EthernetConfig* pCfg) {
+    if (!pCfg) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    return dev->adapter()->get_network_config(pCfg);
+}
+
+CAM_API CamError CAM_CALL Cam_SetNetworkConfig(CameraHandle handle, const EthernetConfig* pCfg) {
+    if (!pCfg) return CAM_ERR_INVALID_PARAM;
+    QMutexLocker locker(&g_mutex);
+    CameraDevice* dev = device_for(handle);
+    if (!dev) return CAM_ERR_INVALID_HANDLE;
+    return dev->adapter()->set_network_config(pCfg);
+}
+
 // =========================================================================
 // 4.4 Sensor 独立节点查询
 // =========================================================================

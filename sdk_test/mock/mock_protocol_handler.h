@@ -51,8 +51,6 @@ public:
     void read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void read_gain(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
-    void set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
-    void read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_trigger_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
@@ -72,6 +70,20 @@ public:
     void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
+
+    // ── 设备信息读取覆盖（立即返回默认测试数据）──
+    void read_camera_version(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
+    void read_fpga_version(std::function<void(const ControlFrame&)> callback = nullptr,
+                           std::function<void()> error_callback = nullptr) override;
+    void read_device_serial(std::function<void(const ControlFrame&)> callback = nullptr,
+                            std::function<void()> error_callback = nullptr) override;
+    void set_device_serial(uint32_t serial, std::function<void(const ControlFrame&)> callback = nullptr,
+                           std::function<void()> error_callback = nullptr) override;
+    void read_network_config(std::function<void(const ControlFrame&)> callback = nullptr,
+                             std::function<void()> error_callback = nullptr) override;
+    void set_network_config(uint32_t dev_ip, uint32_t pc_ip, uint32_t mask, uint32_t gateway,
+                            const uint8_t mac[6], std::function<void(const ControlFrame&)> callback = nullptr,
+                            std::function<void()> error_callback = nullptr) override;
 
     // ── 发送命令捕获（供 SDKTest 校验"调用后是否发送了对应协议命令"）──
     // 记录一条已发送命令（线程安全）
@@ -99,7 +111,6 @@ public:
     // Mock 默认测试数据（读命令返回值；Set 不持久化）
     int default_exposure() const { return 1000; }
     int default_gain() const { return 1; }
-    int default_exposure_delay() const { return 100; }
     int default_sample_rate() const { return 2500; }
     int default_trigger_mode() const { return 0; }
     int default_encoder_type() const { return 0; }
@@ -128,7 +139,7 @@ private:
     std::atomic<bool> m_capturing{false};
     std::atomic<bool> m_silent_acks{false};   // 静默模式：跳过 reply（模拟无 ACK）
     std::atomic<uint32_t> m_frame_id{0};
-    QString m_fpgaVersion = QStringLiteral("MOCK_FPGA_V1.0");
+    QString m_fpgaVersion = QStringLiteral("1.0.0.1");
 
     mutable QMutex m_cmd_mutex;               // 保护 m_sent_cmds
     QVector<MockSentCmd> m_sent_cmds;         // 已发送命令记录

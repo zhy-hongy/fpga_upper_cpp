@@ -163,7 +163,6 @@ struct SensorConfig {
     // 曝光与增益
     uint32_t exposureTime;          // 曝光时间 (us)
     uint32_t gain;                  // 曝光增益
-    uint32_t exposureDelay;         // 曝光延迟
     // 图像 ROI
     uint16_t roiStart;              // ROI 起始列
     uint16_t roiWidth;              // ROI 宽度
@@ -178,7 +177,7 @@ struct SensorConfig {
 
 | 描述 | 备注 |
 |---|---|
-| 曝光/增益/ROI/物理测量/采样参数 | ROI 与物理测量字段（`roiStart/roiWidth/pixelPitch/zMin/zMax`）协议未实现，非零时 `Cam_SetSensorConfig` 返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令 |
+| 曝光/增益/ROI/物理测量/采样参数 | 支持的字段：`exposureTime/gain/sampleRate`。ROI 与物理测量字段（`roiStart/roiWidth/pixelPitch/zMin/zMax`）协议未实现，非零时 `Cam_SetSensorConfig` 返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令 |
 
 ### 5.5 TriggerConfig — 触发与控制配置
 
@@ -378,6 +377,17 @@ typedef void(CAM_CALL *CommandResultCallback)(
 |---|---|
 | `Cam_OpenNetworkDevice` | 独立模式直连 FPGA（SDK 内部自建唯一一套通信） |
 
+#### 6.1.4b 设备信息读取（独立模式）
+
+| 函数名 | 概要 | 功能码 |
+|---|---|---|
+| `Cam_GetFpgaVersion` | 获取 FPGA 固件版本 "A.B.C.D" | 0x0502 读 |
+| `Cam_GetCameraVersion` | 获取相机固件版本 "A.B.C.D" | 0x0007 读 |
+| `Cam_GetDeviceSerial` | 获取设备序列号 | 0x0503 读 |
+| `Cam_SetDeviceSerial` | 烧录设备序列号 | 0x0503 写 |
+| `Cam_GetNetworkConfig` | 获取 FPGA 网络参数 | 0x0501 读 |
+| `Cam_SetNetworkConfig` | 配置 FPGA 网络参数 | 0x0501 写 |
+
 #### 6.1.5 测试专用 Mock（TEST-ONLY）
 
 | 函数名 | 概要 |
@@ -417,12 +427,15 @@ typedef void(CAM_CALL *CommandResultCallback)(
 
 #### 6.1.10 采集控制
 
+> 采集/批处理统一走 `0x0204 BATCH_CONTROL`（写数据 4B：高 2B 开关 `0x0001` 启动 / `0x0000` 停止，低 2B 批次序号置 0）。
+> 已废弃 `0x0011 START_STOP`，不再发送。
+
 | 函数名 | 概要 |
 |---|---|
-| `Cam_StartCapture` | 开始采集 |
-| `Cam_StopCapture` | 停止采集 |
-| `Cam_StartBatch` | 开始批处理采集 |
-| `Cam_StopBatch` | 停止批处理采集 |
+| `Cam_StartCapture` | 开始采集（0x0204 启动） |
+| `Cam_StopCapture` | 停止采集（0x0204 停止） |
+| `Cam_StartBatch` | 开始批处理采集（0x0204 启动） |
+| `Cam_StopBatch` | 停止批处理采集（0x0204 停止） |
 | `Cam_ResetBuffer` | 复位接收缓冲区 |
 
 #### 6.1.11 数据回调与同步接收
@@ -681,7 +694,148 @@ CamError CAM_CALL Cam_GetRunState(CameraHandle handle, DeviceRunState* pState);
 
 获取设备运行状态。设备打开后返回 `STATE_READY`，未打开返回 `STATE_IDLE`。
 
-#### 6.2.11 Cam_OpenNetworkDevice
+#### 6.2.11 Cam_GetFpgaVersion
+
+**格式**
+
+```cpp
+CamError CAM_CALL Cam_GetFpgaVersion(CameraHandle handle, char* outVer, uint32_t bufSize);
+```
+
+**参数**
+
+- `handle`：相机句柄
+- `outVer`：[out] 版本字符串缓冲区
+- `bufSize`：缓冲区大小（建议 ≥ 16）
+
+**返回值**
+
+- `CAM_OK`：获取成功
+- `CAM_ERR_INVALID_HANDLE`：句柄无效
+- `CAM_ERR_INVALID_PARAM`：`outVer` 为空或 `bufSize` 不足
+
+**说明**
+
+获取 FPGA 固件版本（功能码 `0x0502` 读，设备类型 0x0000）。应答数据为 4 字节 `A.B.C.D`（如 `01 00 00 01` → `"1.0.0.1"`）。
+
+#### 6.2.12 Cam_GetCameraVersion
+
+**格式**
+
+```cpp
+CamError CAM_CALL Cam_GetCameraVersion(CameraHandle handle, uint16_t sensorId,
+                                       char* outVer, uint32_t bufSize);
+```
+
+**参数**
+
+- `handle`：相机句柄
+- `sensorId`：Sensor 编号（1~4）
+- `outVer`：[out] 版本字符串缓冲区
+- `bufSize`：缓冲区大小（建议 ≥ 16）
+
+**返回值**
+
+- `CAM_OK`：获取成功
+- `CAM_ERR_INVALID_HANDLE`：句柄无效
+- `CAM_ERR_INVALID_PARAM`：`sensorId` 越界，或 `outVer` 为空 / `bufSize` 不足
+
+**说明**
+
+获取相机固件版本（功能码 `0x0007` 读，请求载荷 2B `00 01`）。应答数据为 4 字节 `A.B.C.D`。
+
+#### 6.2.13 Cam_GetDeviceSerial
+
+**格式**
+
+```cpp
+CamError CAM_CALL Cam_GetDeviceSerial(CameraHandle handle, uint32_t* pSerial);
+```
+
+**参数**
+
+- `handle`：相机句柄
+- `pSerial`：[out] 设备序列号
+
+**返回值**
+
+- `CAM_OK`：获取成功
+- `CAM_ERR_INVALID_HANDLE`：句柄无效
+- `CAM_ERR_INVALID_PARAM`：`pSerial` 为空
+
+**说明**
+
+获取设备序列号（功能码 `0x0503` 读）。应答数据为 4 字节大端 `uint32_t`。
+
+#### 6.2.14 Cam_SetDeviceSerial
+
+**格式**
+
+```cpp
+CamError CAM_CALL Cam_SetDeviceSerial(CameraHandle handle, uint32_t serial);
+```
+
+**参数**
+
+- `handle`：相机句柄
+- `serial`：要烧录的设备序列号
+
+**返回值**
+
+- `CAM_OK`：设置成功
+- `CAM_ERR_INVALID_HANDLE`：句柄无效
+
+**说明**
+
+烧录设备序列号（功能码 `0x0503` 写，载荷 4 字节大端）。应答载荷为 2 字节状态。
+
+#### 6.2.15 Cam_GetNetworkConfig
+
+**格式**
+
+```cpp
+CamError CAM_CALL Cam_GetNetworkConfig(CameraHandle handle, EthernetConfig* pCfg);
+```
+
+**参数**
+
+- `handle`：相机句柄
+- `pCfg`：[out] 网络配置（`EthernetConfig`）
+
+**返回值**
+
+- `CAM_OK`：获取成功
+- `CAM_ERR_INVALID_HANDLE`：句柄无效
+- `CAM_ERR_INVALID_PARAM`：`pCfg` 为空
+
+**说明**
+
+获取 FPGA 网络参数（功能码 `0x0501` 读）。应答数据 24B：设备 IP(4) + 本机 IP(4) + 子网掩码(4) + 网关(4) + MAC(8B = 2B 预留 + 6B MAC)。
+
+#### 6.2.16 Cam_SetNetworkConfig
+
+**格式**
+
+```cpp
+CamError CAM_CALL Cam_SetNetworkConfig(CameraHandle handle, const EthernetConfig* pCfg);
+```
+
+**参数**
+
+- `handle`：相机句柄
+- `pCfg`：要写入的网络配置（`EthernetConfig`）
+
+**返回值**
+
+- `CAM_OK`：设置成功
+- `CAM_ERR_INVALID_HANDLE`：句柄无效
+- `CAM_ERR_INVALID_PARAM`：`pCfg` 为空
+
+**说明**
+
+配置 FPGA 网络参数（功能码 `0x0501` 写，载荷 24B，线序同读）。MAC 前 2B 预留默认写 0。应答载荷为 2 字节状态。
+
+#### 6.2.17 Cam_OpenNetworkDevice
 
 **格式**
 
@@ -709,7 +863,7 @@ CamError CAM_CALL Cam_OpenNetworkDevice(const char* fpgaIp, uint16_t controlPort
 
 独立 SDK 模式：第三方直接调用 DLL 连接 FPGA，不依赖上位机、不调用 `Cam_AttachProtocolHandler`。SDK 内部创建唯一的通信处理器（一个 UDPWorker + 一个 UDPDataThread），端口映射与宿主一致：控制 socket 绑定 `controlPort`，数据 socket 绑定 `dataPort`，控制命令发往 `fpgaIp:dataPort`。控制/数据流与宿主模式完全一致（异步 ACK + 数据帧回调）。与宿主注入模式互斥。
 
-#### 6.2.12 Cam_OpenNetworkDeviceMock
+#### 6.2.18 Cam_OpenNetworkDeviceMock
 
 **格式**
 
@@ -736,7 +890,7 @@ CamError CAM_CALL Cam_OpenNetworkDeviceMock(const char* fpgaIp, uint16_t control
 
 [TEST-ONLY] 打开测试专用 Mock 设备（无 FPGA 环境验证用）。与 `Cam_OpenNetworkDevice` 同签名，但 SDK 内部创建 MockProtocolHandler：不绑定任何 UDP socket、不产生任何网络收发；控制命令立即回调成功 ACK，调用 `Cam_StartCapture` 后按固定参数（1280×1024、sensor=1）生成模拟帧。
 
-#### 6.2.13 Cam_GetMockSentCommandCount
+#### 6.2.19 Cam_GetMockSentCommandCount
 
 **格式**
 
@@ -760,7 +914,7 @@ CamError CAM_CALL Cam_GetMockSentCommandCount(CameraHandle handle, uint32_t* pCo
 
 [TEST-ONLY] 查询 Mock 设备累计记录的"已发送"协议命令条数，用于验证"未实现协议返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何 UDP 命令"。
 
-#### 6.2.14 Cam_GetSensorCount
+#### 6.2.20 Cam_GetSensorCount
 
 **格式**
 
@@ -783,7 +937,7 @@ CamError CAM_CALL Cam_GetSensorCount(CameraHandle handle, uint32_t* pCount);
 
 获取在线 Sensor 数量。架构固定 4 个传感器槽位（sensorId 1~4），返回 `*pCount = 4`。
 
-#### 6.2.15 Cam_GetSensorInformation
+#### 6.2.21 Cam_GetSensorInformation
 
 **格式**
 
@@ -808,7 +962,7 @@ CamError CAM_CALL Cam_GetSensorInformation(CameraHandle handle, uint16_t sensorI
 
 获取 Sensor 硬件信息。当前协议无 Sensor 信息读取命令，一律返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令。
 
-#### 6.2.16 Cam_SetSensorConfig
+#### 6.2.22 Cam_SetSensorConfig
 
 **格式**
 
@@ -832,9 +986,9 @@ CamError CAM_CALL Cam_SetSensorConfig(CameraHandle handle, uint16_t sensorId,
 
 **说明**
 
-写 Sensor 基础配置（曝光/增益/ROI/采样率等）。依次发送曝光时间、增益、曝光延迟、采样率命令。**注意：ROI（`roiStart/roiWidth`）、物理测量参数（`pixelPitch/zMin/zMax`）协议未实现，设置这些字段返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令。**
+写 Sensor 基础配置（曝光/增益/采样率）。依次发送曝光时间、增益、采样率命令。**注意：ROI（`roiStart/roiWidth`）、物理测量参数（`pixelPitch/zMin/zMax`）协议未实现，设置这些字段返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令。**
 
-#### 6.2.17 Cam_GetSensorConfig
+#### 6.2.23 Cam_GetSensorConfig
 
 **格式**
 
@@ -857,9 +1011,9 @@ CamError CAM_CALL Cam_GetSensorConfig(CameraHandle handle, uint16_t sensorId,
 
 **说明**
 
-读 Sensor 基础配置（曝光时间、增益、曝光延迟、采样率）。ROI 与物理测量字段保持调用方传入的初值，不填充。
+读 Sensor 基础配置（曝光时间、增益、采样率）。ROI 与物理测量字段保持调用方传入的初值，不填充。
 
-#### 6.2.18 Cam_SetTriggerConfig
+#### 6.2.24 Cam_SetTriggerConfig
 
 **格式**
 
@@ -884,7 +1038,7 @@ CamError CAM_CALL Cam_SetTriggerConfig(CameraHandle handle, uint16_t sensorId,
 
 写触发与控制配置（触发模式、编码器类型/模式/间隔、外部触发使能），依次发送 5 条命令。
 
-#### 6.2.19 Cam_GetTriggerConfig
+#### 6.2.25 Cam_GetTriggerConfig
 
 **格式**
 
@@ -909,7 +1063,7 @@ CamError CAM_CALL Cam_GetTriggerConfig(CameraHandle handle, uint16_t sensorId,
 
 读触发与控制配置（触发模式、编码器类型/模式/间隔、外部触发使能），依次发送 5 条命令。
 
-#### 6.2.20 Cam_SetBatchConfig
+#### 6.2.26 Cam_SetBatchConfig
 
 **格式**
 
@@ -934,7 +1088,7 @@ CamError CAM_CALL Cam_SetBatchConfig(CameraHandle handle, uint16_t sensorId,
 
 写批处理配置（批处理行数）。
 
-#### 6.2.21 Cam_GetBatchConfig
+#### 6.2.27 Cam_GetBatchConfig
 
 **格式**
 
@@ -959,7 +1113,7 @@ CamError CAM_CALL Cam_GetBatchConfig(CameraHandle handle, uint16_t sensorId,
 
 读批处理配置（批处理行数）。
 
-#### 6.2.22 Cam_WriteCalibration
+#### 6.2.28 Cam_WriteCalibration
 
 **格式**
 
@@ -984,7 +1138,7 @@ CamError CAM_CALL Cam_WriteCalibration(CameraHandle handle, uint16_t sensorId,
 
 写 Sensor 标定矩阵（128 字节二进制块）。协议未实现，一律返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令。
 
-#### 6.2.23 Cam_ReadCalibration
+#### 6.2.29 Cam_ReadCalibration
 
 **格式**
 
@@ -1009,7 +1163,7 @@ CamError CAM_CALL Cam_ReadCalibration(CameraHandle handle, uint16_t sensorId,
 
 读 Sensor 标定矩阵。协议未实现，一律返回 `CAM_ERR_NOT_SUPPORTED` 且不发送任何命令。
 
-#### 6.2.24 Cam_StartCapture
+#### 6.2.30 Cam_StartCapture
 
 **格式**
 
@@ -1031,7 +1185,7 @@ CamError CAM_CALL Cam_StartCapture(CameraHandle handle, uint16_t sensorId);
 
 开始采集。`sensorId=0` 时对 1~4 全部 Sensor 广播。
 
-#### 6.2.25 Cam_StopCapture
+#### 6.2.31 Cam_StopCapture
 
 **格式**
 
@@ -1053,7 +1207,7 @@ CamError CAM_CALL Cam_StopCapture(CameraHandle handle, uint16_t sensorId);
 
 停止采集。
 
-#### 6.2.26 Cam_StartBatch
+#### 6.2.32 Cam_StartBatch
 
 **格式**
 
@@ -1076,7 +1230,7 @@ CamError CAM_CALL Cam_StartBatch(CameraHandle handle, uint16_t sensorId, uint32_
 
 开始批处理采集。
 
-#### 6.2.27 Cam_StopBatch
+#### 6.2.33 Cam_StopBatch
 
 **格式**
 
@@ -1098,7 +1252,7 @@ CamError CAM_CALL Cam_StopBatch(CameraHandle handle, uint16_t sensorId);
 
 停止批处理采集。
 
-#### 6.2.28 Cam_ResetBuffer
+#### 6.2.34 Cam_ResetBuffer
 
 **格式**
 
@@ -1120,7 +1274,7 @@ CamError CAM_CALL Cam_ResetBuffer(CameraHandle handle, uint16_t sensorId);
 
 复位指定 Sensor 的接收缓冲区。
 
-#### 6.2.29 Cam_RegisterDataHandler
+#### 6.2.35 Cam_RegisterDataHandler
 
 **格式**
 
@@ -1146,7 +1300,7 @@ CamError CAM_CALL Cam_RegisterDataHandler(CameraHandle handle, DataHandler handl
 
 注册数据回调。注册后，SDK 在收到数据帧时在内部回调线程调用 `handler`。重复注册会覆盖上一次的 `handler` 与 `pUserData`。数据链路：UDPDataThread → FramePacket → DataDispatcher → CallbackWorker → DataHandler。
 
-#### 6.2.30 Cam_UnregisterDataHandler
+#### 6.2.36 Cam_UnregisterDataHandler
 
 **格式**
 
@@ -1167,7 +1321,7 @@ CamError CAM_CALL Cam_UnregisterDataHandler(CameraHandle handle);
 
 注销数据回调（不再接收数据帧）。
 
-#### 6.2.31 Cam_GetFrameSync
+#### 6.2.37 Cam_GetFrameSync
 
 **格式**
 
@@ -1198,7 +1352,7 @@ CamError CAM_CALL Cam_GetFrameSync(CameraHandle handle, uint16_t sensorId,
 
 同步阻塞读取一帧数据。将指定 Sensor 最新一帧数据拷贝到调用方缓冲区并返回帧头信息。
 
-#### 6.2.32 Cam_StartCaptureAsync
+#### 6.2.38 Cam_StartCaptureAsync
 
 **格式**
 
@@ -1226,7 +1380,7 @@ CamError CAM_CALL Cam_StartCaptureAsync(CameraHandle handle, uint16_t sensorId,
 
 异步非阻塞开始采集。调用后不等待 FPGA ACK，立即返回 `CAM_PENDING`；ACK 或超时后回调通知。**注意：回调在 SDK 内部 CommandManager 线程执行，不要在回调内调用 `Cam_CloseDevice`/`Cam_Finalize`。**
 
-#### 6.2.33 Cam_StopCaptureAsync
+#### 6.2.39 Cam_StopCaptureAsync
 
 **格式**
 
@@ -1254,7 +1408,7 @@ CamError CAM_CALL Cam_StopCaptureAsync(CameraHandle handle, uint16_t sensorId,
 
 异步非阻塞停止采集。
 
-#### 6.2.34 Cam_SetSensorConfigAsync
+#### 6.2.40 Cam_SetSensorConfigAsync
 
 **格式**
 
@@ -1284,7 +1438,7 @@ CamError CAM_CALL Cam_SetSensorConfigAsync(CameraHandle handle, uint16_t sensorI
 
 异步非阻塞写 Sensor 基础配置（曝光时间、增益、曝光延迟、采样率）。
 
-#### 6.2.35 Cam_GetSensorConfigAsync
+#### 6.2.41 Cam_GetSensorConfigAsync
 
 **格式**
 
@@ -1313,7 +1467,7 @@ CamError CAM_CALL Cam_GetSensorConfigAsync(CameraHandle handle, uint16_t sensorI
 
 异步非阻塞读 Sensor 基础配置。SDK 在 ACK 到达、回调触发前填充 `*pConfig`；调用方需保证该指针在回调前有效。
 
-#### 6.2.36 Cam_SetTriggerConfigAsync
+#### 6.2.42 Cam_SetTriggerConfigAsync
 
 **格式**
 
@@ -1342,7 +1496,7 @@ CamError CAM_CALL Cam_SetTriggerConfigAsync(CameraHandle handle, uint16_t sensor
 
 异步非阻塞写触发与控制配置（触发模式、编码器类型/模式/间隔、外部触发使能）。
 
-#### 6.2.37 Cam_GetTriggerConfigAsync
+#### 6.2.43 Cam_GetTriggerConfigAsync
 
 **格式**
 
@@ -1371,7 +1525,7 @@ CamError CAM_CALL Cam_GetTriggerConfigAsync(CameraHandle handle, uint16_t sensor
 
 异步非阻塞读触发与控制配置。
 
-#### 6.2.38 Cam_SetBatchConfigAsync
+#### 6.2.44 Cam_SetBatchConfigAsync
 
 **格式**
 
@@ -1400,7 +1554,7 @@ CamError CAM_CALL Cam_SetBatchConfigAsync(CameraHandle handle, uint16_t sensorId
 
 异步非阻塞写批处理配置（批处理行数）。
 
-#### 6.2.39 Cam_GetBatchConfigAsync
+#### 6.2.45 Cam_GetBatchConfigAsync
 
 **格式**
 
@@ -1429,7 +1583,7 @@ CamError CAM_CALL Cam_GetBatchConfigAsync(CameraHandle handle, uint16_t sensorId
 
 异步非阻塞读批处理配置。
 
-#### 6.2.40 Cam_StartBatchAsync
+#### 6.2.46 Cam_StartBatchAsync
 
 **格式**
 
@@ -1458,7 +1612,7 @@ CamError CAM_CALL Cam_StartBatchAsync(CameraHandle handle, uint16_t sensorId, ui
 
 异步非阻塞开始批处理采集。
 
-#### 6.2.41 Cam_StopBatchAsync
+#### 6.2.47 Cam_StopBatchAsync
 
 **格式**
 
@@ -1486,7 +1640,7 @@ CamError CAM_CALL Cam_StopBatchAsync(CameraHandle handle, uint16_t sensorId,
 
 异步非阻塞停止批处理采集。
 
-#### 6.2.42 Cam_ResetBufferAsync
+#### 6.2.48 Cam_ResetBufferAsync
 
 **格式**
 

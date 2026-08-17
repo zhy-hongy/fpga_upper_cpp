@@ -660,7 +660,6 @@ void MainWindow::build_trigger_tab(QVBoxLayout* parent) {
 
 void MainWindow::build_image_tab(QVBoxLayout* parent) {
     build_cam_group(parent);
-    build_exposure_delay_group(parent);
     build_measure_range_group(parent);
     //build_image_enhance_group(parent);
     //build_image_display_group(parent);
@@ -870,31 +869,6 @@ void MainWindow::build_cam_group(QVBoxLayout* parent) {
     lay->addLayout(btn_row);
 
     parent->addWidget(g);
-}
-
-void MainWindow::build_exposure_delay_group(QVBoxLayout* parent) {
-    m_exp_delay_group = new QGroupBox("曝光延迟配置");
-    auto* lay = new QVBoxLayout(m_exp_delay_group);
-    lay->setSpacing(6);
-    lay->setContentsMargins(8, 20, 8, 8);
-
-    for (int i = 1; i <= 4; i++) {
-        auto* row = new QHBoxLayout();
-        row->addWidget(new QLabel(QString("Cam%1 延迟 (us):").arg(i)));
-        auto* spin = new QSpinBox();
-        spin->setRange(0, 1000000);
-        spin->setValue(0);
-        spin->setSuffix(" us");
-        row->addWidget(spin, 1);
-        lay->addLayout(row);
-        m_exp_delay_spins.append(spin);
-    }
-
-    m_btn_exp_delay_send = new QPushButton("下发延迟配置");
-    lay->addWidget(m_btn_exp_delay_send);
-
-    m_exp_delay_group->hide();
-    parent->addWidget(m_exp_delay_group);
 }
 
 void MainWindow::build_measure_range_group(QVBoxLayout* parent) {
@@ -1252,7 +1226,6 @@ void MainWindow::connect_signals() {
         connect(m_camera_group, &QButtonGroup::idToggled, this, [this](int id, bool checked) {
             if (!checked) return;
             m_selected_camera = id;
-            if (m_exp_delay_group) m_exp_delay_group->setVisible(m_selected_camera == 0);
         });
     }
 
@@ -1294,9 +1267,6 @@ void MainWindow::connect_signals() {
 
     if (m_btn_apply) connect(m_btn_apply, &QPushButton::clicked, this, &MainWindow::on_apply_params);
     if (m_btn_read) connect(m_btn_read, &QPushButton::clicked, this, &MainWindow::on_read_params);
-
-    // Exposure delay
-    if (m_btn_exp_delay_send) connect(m_btn_exp_delay_send, &QPushButton::clicked, this, &MainWindow::on_send_exp_delay);
 
     // Network
     if (m_btn_connect) connect(m_btn_connect, &QPushButton::clicked, this, &MainWindow::on_net_connect);
@@ -1578,21 +1548,51 @@ void MainWindow::on_connected() {
     m_status_widget->set_ip(QString("%1:%2").arg(m_edit_fpga->text()).arg(m_spin_fpga_port->value()));
     log("FPGA 已连接");
 
-    // Read FW version after connect
+    // Read FW version after connect（0x0502，4 字节 "A.B.C.D"）
     if (!m_protocol) return;
     m_protocol->read_fpga_version(
         [this](const ControlFrame& r) {
             // Check if this object still exists before accessing members
             if (!m_lbl_fw_version) return;
-            QString ver = QString::fromUtf8(r.data).trimmed();
-            if (ver.isEmpty()) ver = "(empty)";
+            QString ver = (r.data.size() >= 4)
+                ? QString("%1.%2.%3.%4")
+                      .arg(static_cast<int>(static_cast<quint8>(r.data[0])))
+                      .arg(static_cast<int>(static_cast<quint8>(r.data[1])))
+                      .arg(static_cast<int>(static_cast<quint8>(r.data[2])))
+                      .arg(static_cast<int>(static_cast<quint8>(r.data[3])))
+                : "(empty)";
             m_lbl_fw_version->setText(ver);
             log(QString("FPGA 固件版本: %1").arg(ver));
         },
-        [this]() { 
+        [this]() {
             if (!this) return;  // Redundant but safe
-            log_error("读取 FPGA 固件版本超时"); 
+            log_error("读取 FPGA 固件版本超时");
         });
+
+    // 读取相机固件版本（0x0007，Sensor1）与设备序列号（0x0503）→ 日志
+    m_protocol->read_camera_version(1, [this](const ControlFrame& r) {
+        if (r.data.size() >= 4) {
+            log(QString("相机固件版本 (Cam1): %1.%2.%3.%4")
+                    .arg(static_cast<int>(static_cast<quint8>(r.data[0])))
+                    .arg(static_cast<int>(static_cast<quint8>(r.data[1])))
+                    .arg(static_cast<int>(static_cast<quint8>(r.data[2])))
+                    .arg(static_cast<int>(static_cast<quint8>(r.data[3]))));
+        } else {
+            log("相机固件版本 (Cam1): (empty)");
+        }
+    });
+    m_protocol->read_device_serial([this](const ControlFrame& r) {
+        if (r.data.size() >= 4) {
+            const uint32_t serial =
+                (static_cast<uint32_t>(static_cast<quint8>(r.data[0])) << 24) |
+                (static_cast<uint32_t>(static_cast<quint8>(r.data[1])) << 16) |
+                (static_cast<uint32_t>(static_cast<quint8>(r.data[2])) << 8) |
+                static_cast<uint32_t>(static_cast<quint8>(r.data[3]));
+            log(QString("设备序列号: 0x%1").arg(serial, 8, 16, QChar('0')));
+        } else {
+            log("设备序列号: (empty)");
+        }
+    });
 }
 
 void MainWindow::on_disconnected() {
@@ -1697,19 +1697,6 @@ void MainWindow::on_read_gain_done(const ControlFrame& frame) {
         m_gain_slider->setValue(static_cast<int>(val));
         log(QString("读取到增益: %1").arg(val));
     }
-}
-
-void MainWindow::on_send_exp_delay() {
-    QString msg = "下发曝光延迟:";
-    for (int i = 0; i < 4; i++) {
-        int delay = m_exp_delay_spins[i]->value();
-        msg += QString(" Cam%1=%2us").arg(i + 1).arg(delay);
-        m_protocol->set_exposure_delay(delay, i + 1,
-            [this, sid = i + 1](const ControlFrame& r) {
-                log(QString("曝光延迟应答 (Cam%1): data=%2").arg(sid).arg(QString(r.data.toHex())));
-            });
-    }
-    log(msg);
 }
 
 // ══════════════════════════════════════════════════

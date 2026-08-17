@@ -42,6 +42,15 @@ public:
     CamError reset_buffer(uint16_t sensorId);
     CamError get_batch_data(uint16_t sensorId);
 
+    // ---- 设备信息读取（对齐 通讯协议.md：0x0007/0x0501/0x0502/0x0503）----
+    // 相机固件版本走 sensor(1~4)；FPGA 固件版本 / 设备序列号 / 网络参数走 Dev=FPGA。
+    CamError get_fpga_version(char* outVer, uint32_t bufSize);
+    CamError get_camera_version(uint16_t sensorId, char* outVer, uint32_t bufSize);
+    CamError get_device_serial(uint32_t* pSerial);
+    CamError set_device_serial(uint32_t serial);
+    CamError get_network_config(EthernetConfig* pCfg);
+    CamError set_network_config(const EthernetConfig* pCfg);
+
     // ---- 异步非阻塞控制 API 转发 ----
     // 立即返回 CAM_PENDING；ACK / 超时后经 CommandResultCallback 在 CommandManager
     // 线程回调。timeoutMs 为超时阈值（ms）。sensorId=0 对 1~4 广播（每个子命令独立 commandId）。

@@ -67,14 +67,6 @@ void MockProtocolHandler::read_gain(int sensor_id, std::function<void(const Cont
     emit_command(CMD_GAIN, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be32(static_cast<uint32_t>(default_gain())));
 }
-void MockProtocolHandler::set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    emit_command(CMD_EXPOSURE_DELAY, RW_WRITE, be32(static_cast<uint32_t>(delay_us)), sensor_id);
-    reply(std::move(callback));
-}
-void MockProtocolHandler::read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    emit_command(CMD_EXPOSURE_DELAY, RW_READ, QByteArray(2, '\0'), sensor_id);
-    reply(std::move(callback), be32(static_cast<uint32_t>(default_exposure_delay())));
-}
 void MockProtocolHandler::set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback) {
     emit_command(CMD_SAMPLE_RATE, RW_WRITE, be32(static_cast<uint32_t>(rate_hz)), sensor_id);
     reply(std::move(callback));
@@ -162,7 +154,8 @@ void MockProtocolHandler::get_batch_data(int sensor_id, std::function<void(const
     reply(std::move(callback), QByteArray(128, '\0'));  // 128 字节零填充默认批处理响应
 }
 void MockProtocolHandler::set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    QByteArray payload(2, '\0');
+    // 0x0204 写数据 4B：高 2B 开关(0x0001 启动 / 0x0000 停止)，低 2B 批次序号(置 0)
+    QByteArray payload(4, '\0');
     if (start) payload[1] = 0x01;
     emit_command(CMD_BATCH_CONTROL, RW_WRITE, payload, sensor_id);
     reply(std::move(callback));
@@ -172,14 +165,67 @@ void MockProtocolHandler::reset_buffer(int sensor_id, std::function<void(const C
     reply(std::move(callback));
 }
 void MockProtocolHandler::start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    emit_command(CMD_START_STOP, RW_WRITE, QByteArray(2, '\0'), sensor_id);
+    emit_command(CMD_BATCH_CONTROL, RW_WRITE, QByteArray("\x00\x01\x00\x00", 4), sensor_id);
     reply(std::move(callback));
     start_mock_frames();
 }
 void MockProtocolHandler::stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    emit_command(CMD_START_STOP, RW_WRITE, QByteArray(2, '\0'), sensor_id);
+    emit_command(CMD_BATCH_CONTROL, RW_WRITE, QByteArray(4, '\0'), sensor_id);
     reply(std::move(callback));
     stop_mock_frames();
+}
+
+// ── 设备信息读取覆盖：记录命令 + 返回默认测试数据 ──
+
+void MockProtocolHandler::read_camera_version(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_CAMERA_VERSION, RW_READ, QByteArray("\x00\x01", 2), sensor_id);
+    reply(std::move(callback), QByteArray("\x01\x00\x00\x01", 4));  // "1.0.0.1"
+}
+void MockProtocolHandler::read_fpga_version(std::function<void(const ControlFrame&)> callback,
+                                            std::function<void()> error_callback) {
+    emit_command(CMD_FPGA_VERSION, RW_READ, QByteArray(2, '\0'), DEV_FPGA);
+    reply(std::move(callback), QByteArray("\x01\x00\x00\x01", 4));  // "1.0.0.1"
+    (void)error_callback;
+}
+void MockProtocolHandler::read_device_serial(std::function<void(const ControlFrame&)> callback,
+                                             std::function<void()> error_callback) {
+    emit_command(CMD_DEVICE_SERIAL, RW_READ, QByteArray(2, '\0'), DEV_FPGA);
+    reply(std::move(callback), be32(0x12345678));
+    (void)error_callback;
+}
+void MockProtocolHandler::set_device_serial(uint32_t serial, std::function<void(const ControlFrame&)> callback,
+                                            std::function<void()> error_callback) {
+    emit_command(CMD_DEVICE_SERIAL, RW_WRITE, be32(serial), DEV_FPGA);
+    reply(std::move(callback));
+    (void)error_callback;
+}
+void MockProtocolHandler::read_network_config(std::function<void(const ControlFrame&)> callback,
+                                              std::function<void()> error_callback) {
+    // 24B：设备IP + 本机IP + 掩码 + 网关 + 设备MAC(2B 预留 + 6B)
+    QByteArray payload;
+    payload.append(be32(0xC0A80A0A));   // 192.168.10.10
+    payload.append(be32(0xC0A80A64));   // 192.168.10.100
+    payload.append(be32(0xFFFFFF00));   // 255.255.255.0
+    payload.append(be32(0xC0A80A01));   // 192.168.10.1
+    payload.append(QByteArray(2, '\0'));  // MAC 前 2B 预留
+    payload.append(QByteArray("\x00\x00\x02\x00\x00\x01", 6));
+    emit_command(CMD_NETWORK_CONFIG, RW_READ, QByteArray(2, '\0'), DEV_FPGA);
+    reply(std::move(callback), payload);
+    (void)error_callback;
+}
+void MockProtocolHandler::set_network_config(uint32_t dev_ip, uint32_t pc_ip, uint32_t mask, uint32_t gateway,
+                                             const uint8_t mac[6], std::function<void(const ControlFrame&)> callback,
+                                             std::function<void()> error_callback) {
+    QByteArray payload;
+    payload.append(be32(dev_ip));
+    payload.append(be32(pc_ip));
+    payload.append(be32(mask));
+    payload.append(be32(gateway));
+    payload.append(QByteArray(2, '\0'));  // MAC 前 2B 预留
+    for (int i = 0; i < 6; ++i) payload.append(static_cast<char>(mac[i]));
+    emit_command(CMD_NETWORK_CONFIG, RW_WRITE, payload, DEV_FPGA);
+    reply(std::move(callback));
+    (void)error_callback;
 }
 
 // ── Mock 帧生成 ──

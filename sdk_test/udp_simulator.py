@@ -10,13 +10,14 @@ Protocol:
 
 Frame structure (two layers):
   Outer Transport Frame: [0xABAB][2B packet_id][2B total][2B current][4B retransmit][4B reserved][2B data_len][payload][2B CRC16][0xDCDC]
-  Inner Control Frame:   [0xAA55][2B device_type][2B cmd_code][2B msg_id][1B msg_type][1B rw][2B data_len][payload][2B CRC16][0xFAFA]
+  Inner Control Frame:   [0xAA55][2B device_type][2B cmd_code][2B msg_id][1B msg_type][1B rw][4B data_len][payload][2B CRC16][0xFAFA]
 
 Usage:
   python udp_simulator.py [data_port=60000] [control_port=5000]
 """
 
 import os
+import select
 import socket
 import struct
 import sys
@@ -26,6 +27,16 @@ from datetime import datetime
 # -- Force unbuffered output so logs appear in real time --
 sys.stdout.reconfigure(line_buffering=True)  # Python 3.7+
 sys.stderr.reconfigure(line_buffering=True)
+
+# -- 管理控制（admin）端口：用于自动化测试时暂停/恢复 ACK ---------------
+# 由于 Windows SO_REUSEADDR 下"先绑定者拥有端口"，自动化测试不能通过
+# 停止/重启本进程来模拟 FPGA 无应答（重启后的新进程会被 SDK 自己的数据
+# socket 遮蔽，收不到命令）。因此提供一个独立的 admin 端口（data_port+1）：
+#   向该端口发送 "PAUSE"  -> 收到命令后不再回 ACK（模拟无应答/超时路径）
+#   向该端口发送 "RESUME" -> 恢复回 ACK
+ADMIN_PORT_OFFSET = 1
+
+ACK_ENABLED = True   # 由 admin 端口控制
 
 # -- Log file (for real-time viewing when stdout is piped) --
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "udp_simulator.log")
@@ -89,10 +100,9 @@ RW_READ  = 0x80
 CMD_NAMES = {
     0x0001: "EXPOSURE_TIME",
     0x0002: "GAIN",
-    0x0003: "EXPOSURE_DELAY",
-    0x0007: "FRAME_RATE",
+    0x0003: "ROI_X",
+    0x0007: "CAMERA_VERSION",
     0x000A: "SAMPLE_RATE",
-    0x0011: "START_STOP",
     0x0101: "TRIGGER_MODE",
     0x0102: "ENCODER_TYPE",
     0x0103: "ENCODER_MODE",
@@ -102,7 +112,9 @@ CMD_NAMES = {
     0x0203: "EXTERNAL_TRIGGER",
     0x0204: "BATCH_CONTROL",
     0x0205: "RESET_BUFFER",
-    0x0503: "READ_VERSION",
+    0x0501: "NETWORK_CONFIG",
+    0x0502: "FPGA_VERSION",
+    0x0503: "DEVICE_SERIAL",
 }
 
 DEVICE_NAMES = {
@@ -117,8 +129,10 @@ DEVICE_NAMES = {
 MOCK_STATE = {
     "exposure_time": 1000,    # us
     "gain": 200,
-    "exposure_delay": 0,
-    "frame_rate": 100,
+    "roi_x": 0,               # 高16位起始lane，低16位lane长度
+    "camera_version": b'\x01\x00\x00\x01',   # "1.0.0.1"
+    "fpga_version": b'\x01\x00\x00\x01',     # "1.0.0.1"
+    "device_serial": 0x12345678,
     "sample_rate": 200,
     "trigger_mode": 1,        # continuous
     "encoder_type": 1,        # differential
@@ -126,6 +140,11 @@ MOCK_STATE = {
     "encoder_interval": 1000,
     "batch_length": 16,
     "external_trigger": 0,    # off
+    "net_dev_ip": 0xC0A80A0A,     # 192.168.10.10
+    "net_pc_ip": 0xC0A80A64,      # 192.168.10.100
+    "net_mask": 0xFFFFFF00,       # 255.255.255.0
+    "net_gw": 0xC0A80A01,         # 192.168.10.1
+    "net_mac": bytes([0x00, 0x00, 0x02, 0x00, 0x00, 0x01]),
 }
 
 # -- Frame parsing & construction -------------------------------------------
@@ -165,7 +184,7 @@ def parse_transport_frame(data: bytes) -> dict | None:
 
 def parse_control_frame(data: bytes) -> dict | None:
     """Parse inner Control Frame"""
-    if len(data) < 16:
+    if len(data) < 18:
         return None
     if struct.unpack('>H', data[0:2])[0] != CMD_HEADER:
         return None
@@ -184,8 +203,8 @@ def parse_control_frame(data: bytes) -> dict | None:
     msg_id      = struct.unpack('>H', data[6:8])[0]
     msg_type    = data[8]
     rw          = data[9]
-    data_len    = struct.unpack('>H', data[10:12])[0]
-    payload     = data[12:12 + data_len]
+    data_len    = struct.unpack('>I', data[10:14])[0]
+    payload     = data[14:14 + data_len]
 
     return {
         'device_type': device_type,
@@ -200,7 +219,7 @@ def parse_control_frame(data: bytes) -> dict | None:
 def pack_control_frame(device_type: int, cmd_code: int, msg_id: int,
                        msg_type: int, rw: int, payload: bytes = b'') -> bytes:
     """Build inner Control Frame"""
-    inner = struct.pack('>HHHBBH',
+    inner = struct.pack('>HHHBBI',
                         device_type, cmd_code, msg_id,
                         msg_type, rw, len(payload))
     inner += payload
@@ -224,14 +243,30 @@ def get_response_data(cmd_code: int, rw: int) -> bytes:
     if rw != RW_READ:
         return b''
 
+    # 版本号：4B "A.B.C.D" 字节串（直接返回）
+    if cmd_code == 0x0007:      # CAMERA_VERSION
+        return bytes(MOCK_STATE["camera_version"])
+    if cmd_code == 0x0502:      # FPGA_VERSION
+        return bytes(MOCK_STATE["fpga_version"])
+
+    # 网络配置：24B (设备IP + 本机IP + 掩码 + 网关 + 2B 预留 + MAC6)
+    if cmd_code == 0x0501:      # NETWORK_CONFIG
+        return (struct.pack('>IIII',
+                            MOCK_STATE["net_dev_ip"],
+                            MOCK_STATE["net_pc_ip"],
+                            MOCK_STATE["net_mask"],
+                            MOCK_STATE["net_gw"])
+                + b'\x00\x00'
+                + bytes(MOCK_STATE["net_mac"]))
+
     # 4-byte big-endian values
     four_byte_cmds = {
         0x0001: MOCK_STATE["exposure_time"],     # EXPOSURE_TIME
         0x0002: MOCK_STATE["gain"],               # GAIN
-        0x0003: MOCK_STATE["exposure_delay"],     # EXPOSURE_DELAY
-        0x0007: MOCK_STATE["frame_rate"],         # FRAME_RATE
+        0x0003: MOCK_STATE["roi_x"],              # ROI_X
         0x000A: MOCK_STATE["sample_rate"],        # SAMPLE_RATE
         0x0104: MOCK_STATE["encoder_interval"],   # ENCODER_INTERVAL
+        0x0503: MOCK_STATE["device_serial"],      # DEVICE_SERIAL
     }
 
     # 2-byte big-endian values
@@ -260,6 +295,7 @@ def handle_command(cmd: dict, sender_addr: tuple, sock: socket.socket, control_p
     msg_type    = cmd['msg_type']
     rw          = cmd['rw']
     payload     = cmd['payload']
+    sender_ip   = sender_addr[0]
 
     dev_name = DEVICE_NAMES.get(device_type, f"0x{device_type:04X}")
     cmd_name = CMD_NAMES.get(cmd_code, f"0x{cmd_code:04X}")
@@ -276,8 +312,8 @@ def handle_command(cmd: dict, sender_addr: tuple, sock: socket.socket, control_p
             MOCK_STATE["exposure_time"] = struct.unpack('>I', payload[:4])[0]
         elif cmd_code == 0x0002 and len(payload) >= 4:  # GAIN
             MOCK_STATE["gain"] = struct.unpack('>I', payload[:4])[0]
-        elif cmd_code == 0x0003 and len(payload) >= 4:  # EXPOSURE_DELAY
-            MOCK_STATE["exposure_delay"] = struct.unpack('>I', payload[:4])[0]
+        elif cmd_code == 0x0003 and len(payload) >= 4:  # ROI_X
+            MOCK_STATE["roi_x"] = struct.unpack('>I', payload[:4])[0]
         elif cmd_code == 0x000A and len(payload) >= 4:  # SAMPLE_RATE
             MOCK_STATE["sample_rate"] = struct.unpack('>I', payload[:4])[0]
         elif cmd_code == 0x0101 and len(payload) >= 2:  # TRIGGER_MODE
@@ -292,6 +328,12 @@ def handle_command(cmd: dict, sender_addr: tuple, sock: socket.socket, control_p
             MOCK_STATE["batch_length"] = struct.unpack('>H', payload[:2])[0]
         elif cmd_code == 0x0203 and len(payload) >= 2:  # EXTERNAL_TRIGGER
             MOCK_STATE["external_trigger"] = struct.unpack('>H', payload[:2])[0]
+        elif cmd_code == 0x0501 and len(payload) >= 24:  # NETWORK_CONFIG
+            MOCK_STATE["net_dev_ip"], MOCK_STATE["net_pc_ip"], \
+            MOCK_STATE["net_mask"], MOCK_STATE["net_gw"] = struct.unpack('>IIII', payload[:16])
+            MOCK_STATE["net_mac"] = payload[18:24]  # 跳过 2B 预留
+        elif cmd_code == 0x0503 and len(payload) >= 4:  # DEVICE_SERIAL
+            MOCK_STATE["device_serial"] = struct.unpack('>I', payload[:4])[0]
 
     # Build response
     response_data = get_response_data(cmd_code, rw)
@@ -301,8 +343,14 @@ def handle_command(cmd: dict, sender_addr: tuple, sock: socket.socket, control_p
     )
     response_tf = pack_transport_frame(response_cf)
 
+    if not ACK_ENABLED:
+        # 模拟 FPGA 无应答：记录到日志但不发送 ACK（用于超时测试路径）。
+        ts2 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        log(f"[{ts2}] ~ ACK DISABLED, NOT replying to {sender_ip}:{control_port}")
+        log("")
+        return
+
     # Send response to SDK's controlPort
-    sender_ip = sender_addr[0]
     sock.sendto(response_tf, (sender_ip, control_port))
 
     ts2 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -321,16 +369,23 @@ def format_hex_dump(data: bytes, max_len: int = 80) -> str:
 def main():
     data_port    = int(sys.argv[1]) if len(sys.argv) > 1 else 60000
     control_port = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
+    admin_port   = data_port + ADMIN_PORT_OFFSET
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('0.0.0.0', data_port))
-    sock.settimeout(0.5)
+    sock.setblocking(False)
+
+    admin_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    admin_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    admin_sock.bind(('0.0.0.0', admin_port))
+    admin_sock.setblocking(False)
 
     log("=" * 70)
     log(f"  FPGA UDP Simulator")
     log(f"  Listening on (dataPort) : 0.0.0.0:{data_port}")
     log(f"  ACK reply to (ctrlPort): sender_ip:{control_port}")
+    log(f"  Admin control (adminPort): 0.0.0.0:{admin_port}  (PAUSE / RESUME)")
     log(f"  Simulated device state : {MOCK_STATE}")
     log("=" * 70)
     log("  Waiting for SDK commands... (Ctrl+C to stop)")
@@ -340,45 +395,64 @@ def main():
     raw_count = 0
     try:
         while True:
-            try:
-                data, addr = sock.recvfrom(65536)
-            except socket.timeout:
-                continue
-            except OSError:
-                # Socket closed (e.g. program being terminated)
-                break
+            # 同时监听数据端口与 admin 端口（非阻塞 + select，避免忙轮询）
+            readable, _, _ = select.select([sock, admin_sock], [], [], 0.5)
+            for rsock in readable:
+                if rsock is admin_sock:
+                    try:
+                        admin_data, _addr = admin_sock.recvfrom(64)
+                    except (BlockingIOError, OSError):
+                        continue
+                    cmd = admin_data.decode('utf-8', errors='replace').strip().upper()
+                    global ACK_ENABLED
+                    if cmd == "PAUSE":
+                        ACK_ENABLED = False
+                        log(f"[admin] >>> ACK DISABLED (simulating FPGA no-response)")
+                    elif cmd == "RESUME":
+                        ACK_ENABLED = True
+                        log(f"[admin] >>> ACK ENABLED")
+                    else:
+                        log(f"[admin] unknown cmd: {cmd!r}")
+                    continue
 
-            raw_count += 1
-            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                # ---- 数据端口 ----
+                try:
+                    data, addr = sock.recvfrom(65536)
+                except (BlockingIOError, OSError):
+                    continue
 
-            # Always print raw packet info
-            log(f"[{ts}] RAW UDP #{raw_count:3d}  {len(data):4d}B from {addr[0]}:{addr[1]}  "
-                  f"hex: {format_hex_dump(data)}")
+                raw_count += 1
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-            # Parse Transport Frame
-            tf = parse_transport_frame(data)
-            if tf is None:
-                log(f"       [WARN] Not a valid Transport Frame (header=0xABAB, tail=0xDCDC)")
-                log("")
-                continue
+                # Always print raw packet info
+                log(f"[{ts}] RAW UDP #{raw_count:3d}  {len(data):4d}B from {addr[0]}:{addr[1]}  "
+                      f"hex: {format_hex_dump(data)}")
 
-            payload = tf['payload']
+                # Parse Transport Frame
+                tf = parse_transport_frame(data)
+                if tf is None:
+                    log(f"       [WARN] Not a valid Transport Frame (header=0xABAB, tail=0xDCDC)")
+                    log("")
+                    continue
 
-            # Parse Control Frame
-            cf = parse_control_frame(payload)
-            if cf is None:
-                log(f"       [WARN] Not a valid Control Frame (header=0xAA55, tail=0xFAFA)")
-                log(f"       Inner payload hex: {payload.hex()}")
-                log("")
-                continue
+                payload = tf['payload']
 
-            cmd_count += 1
-            handle_command(cf, addr, sock, control_port)
+                # Parse Control Frame
+                cf = parse_control_frame(payload)
+                if cf is None:
+                    log(f"       [WARN] Not a valid Control Frame (header=0xAA55, tail=0xFAFA)")
+                    log(f"       Inner payload hex: {payload.hex()}")
+                    log("")
+                    continue
+
+                cmd_count += 1
+                handle_command(cf, addr, sock, control_port)
 
     except KeyboardInterrupt:
         pass
     finally:
         sock.close()
+        admin_sock.close()
         log(f"\n{'=' * 70}")
         log(f"  Simulator stopped.")
         log(f"  Total raw UDP packets : {raw_count}")

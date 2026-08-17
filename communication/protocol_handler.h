@@ -58,9 +58,6 @@ public:
     virtual void read_exposure(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_gain(int gain, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_gain(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    void set_frame_rate(int fps, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    virtual void set_exposure_delay(int delay_us, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
-    virtual void read_exposure_delay(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_sample_rate(int rate_hz, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_sample_rate(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_trigger_mode(int mode, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
@@ -81,9 +78,20 @@ public:
     virtual void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
 
-    // FPGA version
-    void read_fpga_version(std::function<void(const ControlFrame&)> callback = nullptr,
-                           std::function<void()> error_callback = nullptr);
+    // ---- 设备信息读取（对齐 通讯协议.md：0x0007/0x0501/0x0502/0x0503）----
+    // 相机固件版本走 sensor(1~4)；FPGA 固件版本 / 设备序列号 / 网络参数走 Dev=FPGA(0x0000)。
+    virtual void read_camera_version(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void read_fpga_version(std::function<void(const ControlFrame&)> callback = nullptr,
+                                   std::function<void()> error_callback = nullptr);
+    virtual void read_device_serial(std::function<void(const ControlFrame&)> callback = nullptr,
+                                    std::function<void()> error_callback = nullptr);
+    virtual void set_device_serial(uint32_t serial, std::function<void(const ControlFrame&)> callback = nullptr,
+                                   std::function<void()> error_callback = nullptr);
+    virtual void read_network_config(std::function<void(const ControlFrame&)> callback = nullptr,
+                                     std::function<void()> error_callback = nullptr);
+    virtual void set_network_config(uint32_t dev_ip, uint32_t pc_ip, uint32_t mask, uint32_t gateway,
+                                    const uint8_t mac[6], std::function<void(const ControlFrame&)> callback = nullptr,
+                                    std::function<void()> error_callback = nullptr);
 
 protected:
     // 打包一条控制命令帧（aa55 协议帧，含内层 CRC），不发送、不登记 pending。
