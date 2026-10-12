@@ -219,7 +219,9 @@ int main() {
     device.close();
 
     Peer empty_value([](const CommandFrame &c, const sockaddr_in &peer,
-                        net::Socket s, unsigned) { respond(s, peer, c, {0, 0}); });
+                        net::Socket s, unsigned) {
+      respond(s, peer, c, {0, 0});
+    });
     device.open(loopback(empty_value.port()));
     require(device.read(1, 1, {100ms, 0}).status == Status::ProtocolError,
             "zero result code cannot replace a fixed-width register value");
@@ -229,8 +231,9 @@ int main() {
 
     Peer versions([](const CommandFrame &c, const sockaddr_in &peer,
                      net::Socket s, unsigned n) {
-      respond(s, peer, c, n == 1 ? Bytes{1, 2, 3, 4}
-                                : Bytes{'O', 'P', 'T', '-', '0', '1', '2', '3'});
+      respond(s, peer, c,
+              n == 1 ? Bytes{1, 2, 3, 4}
+                     : Bytes{'O', 'P', 'T', '-', '0', '1', '2', '3'});
     });
     device.open(loopback(versions.port()));
     r = device.read(0, 0x0502, {100ms, 0});
@@ -324,8 +327,9 @@ int main() {
     reopen.join();
     concurrent_close.join();
     dimensions.join();
-    require(lifecycle_errors == 0,
-            "concurrent lifecycle and dimension updates complete without errors");
+    require(
+        lifecycle_errors == 0,
+        "concurrent lifecycle and dimension updates complete without errors");
     device.close();
     const auto closed_wait_start = std::chrono::steady_clock::now();
     require(!device.wait_next_frame(1, 0, 5s),
@@ -379,6 +383,30 @@ int main() {
                 device.statistics().assembly_bytes == 0,
             "assembly expiry frees memory");
     device.close();
+    Peer shared_board([](const CommandFrame &, const sockaddr_in &, net::Socket,
+                         unsigned) {});
+    device.open(loopback(shared_board.port()));
+    device.start_capture(0x0f, true, 0ms);
+    std::this_thread::sleep_for(80ms);
+    require(shared_board.received == 1 &&
+                device.statistics().pending_requests == 1,
+            "shared forwarding board defaults to one outstanding capture");
+    device.stop_capture();
+    device.set_capture_concurrency(4);
+    device.start_capture(0x0f, true, 0ms);
+    std::this_thread::sleep_for(80ms);
+    require(shared_board.received == 5 &&
+                device.statistics().pending_requests == 4,
+            "parallel capture explicitly enables four outstanding sensors");
+    device.stop_capture();
+    device.close();
+    bool invalid_concurrency = false;
+    try {
+      device.set_capture_concurrency(0);
+    } catch (const std::invalid_argument &) {
+      invalid_concurrency = true;
+    }
+    require(invalid_concurrency, "invalid capture concurrency rejected");
     std::cout << "Device: " << checks << " checks passed\n";
     return 0;
   } catch (const std::exception &e) {

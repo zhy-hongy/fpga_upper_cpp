@@ -260,6 +260,7 @@ const std::vector<CommandSpec>& command_specs() {
         {0x0303,"3D 轮廓",0,0,true,false,DeviceTarget::Camera},
         {0x0304,"3D 插值结果",0,0,true,false,DeviceTarget::Camera},
         {0x0401,"心跳/设备状态",0,2,true,false,DeviceTarget::Fpga},
+        {0x0402,"测试模式 (0=正常, 1=测试)",4,4,false,false,DeviceTarget::All},
         {0x0501,"网络参数",24,24,false,false,DeviceTarget::Fpga},
         {0x0502,"FPGA 固件版本 (4B / 兼容 8B 字符串)",0,4,true,false,DeviceTarget::Fpga},
         {0x0503,"设备序列号",4,4,false,false,DeviceTarget::Fpga},
@@ -312,6 +313,7 @@ void validate_write(std::uint16_t command, const Bytes& payload) {
     case Command::ImageMode:
     case Command::LaserControl:
     case Command::ExternalTriggerStart: check_enum(value, {0,1}); break;
+    case Command::TestMode: check_enum(value, {0,1}); break;
     case Command::TriggerMode:
     case Command::EncoderMode: check_enum(value, {1,2,3}); break;
     case Command::EncoderType: check_enum(value, {1,2}); break;

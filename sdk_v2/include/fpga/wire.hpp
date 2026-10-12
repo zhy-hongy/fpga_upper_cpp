@@ -30,7 +30,7 @@ inline constexpr std::size_t calibration_count = 64;
 inline constexpr std::size_t calibration_size = 384;
 inline constexpr double calibration_scale = 100000000000.0;
 
-enum class DeviceTarget { Fpga, Camera };
+enum class DeviceTarget { Fpga, Camera, All };
 enum class Command : std::uint16_t {
     ExposureTime = 0x0001, Gain = 0x0002, RoiX = 0x0003, RoiZ = 0x0004,
     CmosArea = 0x0005, ExposureDelay = 0x0006, CameraFirmwareVersion = 0x0007,
@@ -45,7 +45,7 @@ enum class Command : std::uint16_t {
     Set3DInterpolationConfig = 0x0207,
     GetCameraData = 0x0300, GetCameraImage = 0x0301, GetCenterline = 0x0302,
     Get3DData = 0x0303, Get3DInterpolation = 0x0304,
-    Heartbeat = 0x0401, NetworkParameter = 0x0501, FpgaFirmwareVersion = 0x0502,
+    Heartbeat = 0x0401, TestMode = 0x0402, NetworkParameter = 0x0501, FpgaFirmwareVersion = 0x0502,
     DeviceSerialNumber = 0x0503, CameraModel = 0x0504, CalibrationData = 0x0505,
     DeviceModel = 0x0506
 };

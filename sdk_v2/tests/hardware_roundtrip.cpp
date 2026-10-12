@@ -77,7 +77,8 @@ struct RegisterResult {
 struct ImageResult {
   uint16_t device = 0, command = 0, message_id = 0;
   unsigned index = 0;
-  bool rearranged = false, success = false, command_matches = false;
+  bool rearranged = false, success = false, captured = false,
+       command_matches = false;
   uint32_t width = 0, height = 0;
   size_t payload_bytes = 0, center = 0, cloud = 0, interp = 0;
   double latency_ms = 0;
@@ -88,18 +89,21 @@ struct ImageResult {
 int main(int argc, char **argv) {
   if (argc < 3) {
     std::cerr << "Usage: fpga_hardware_roundtrip <device-ip> <local-ip> "
-                 "<new-output-dir> [--compat-crc] [--quick]\n       "
+                 "<new-output-dir> [--compat-crc] [--quick] [--images-only] "
+                 "[--force-raw]\n       "
                  "fpga_hardware_roundtrip --simulate <new-output-dir>\n";
     return 2;
   }
   try {
     bool simulated = std::string(argv[1]) == "--simulate", compat = false,
-         quick = false;
+         quick = false, images_only = false, force_raw = false;
     if (!simulated && argc < 4)
       return 2;
     for (int n = 4; n < argc; ++n) {
       compat |= std::string(argv[n]) == "--compat-crc";
       quick |= std::string(argv[n]) == "--quick";
+      images_only |= std::string(argv[n]) == "--images-only";
+      force_raw |= std::string(argv[n]) == "--force-raw";
     }
     std::filesystem::path output(simulated ? argv[2] : argv[3]);
     if (!std::filesystem::create_directory(output))
@@ -133,6 +137,9 @@ int main(int argc, char **argv) {
       errors.flush();
     });
     device.open(options);
+    if (force_raw)
+      for (uint16_t sensor = 1; sensor <= 4; ++sensor)
+        device.set_image_layout(sensor, ImageLayout::FpgaRaw);
     std::cout << "DIRECT CAMERA TEST; heartbeat skipped; " << options.local_ip
               << ':' << device.local_port() << " -> " << options.device_ip
               << ':' << options.device_port
@@ -156,94 +163,99 @@ int main(int argc, char **argv) {
     std::vector<RegisterResult> register_results;
     std::vector<ImageResult> image_results;
     bool unrestored = false;
-    for (uint16_t sensor = 1; sensor <= 4; ++sensor) {
-      for (const auto &spec : registers) {
-        RegisterResult result;
-        result.device = sensor;
-        result.command = spec.command;
-        result.name = spec.name;
-        auto original = request(sensor, spec.command, rw_read, {0, 0},
-                                "read_original", {1500ms, 1});
-        if (!original || original.frame.data.size() != 4) {
-          result.state = "read_failed";
-          result.error = original.error.empty()
-                             ? "Expected a complete uint32 register value"
-                             : original.error;
-          register_results.push_back(result);
-          std::cout << "CAM " << sensor << ' ' << spec.name << ": READ FAILED "
+    if (!images_only)
+      for (uint16_t sensor = 1; sensor <= 4; ++sensor) {
+        for (const auto &spec : registers) {
+          RegisterResult result;
+          result.device = sensor;
+          result.command = spec.command;
+          result.name = spec.name;
+          auto original = request(sensor, spec.command, rw_read, {0, 0},
+                                  "read_original", {1500ms, 1});
+          if (!original || original.frame.data.size() != 4) {
+            result.state = "read_failed";
+            result.error = original.error.empty()
+                               ? "Expected a complete uint32 register value"
+                               : original.error;
+            register_results.push_back(result);
+            std::cout << "CAM " << sensor << ' ' << spec.name
+                      << ": READ FAILED " << result.error << std::endl;
+            continue;
+          }
+          result.original = original.frame.data;
+          uint32_t value = read_u32(result.original);
+          originals << sensor << '\t' << std::hex << spec.command << std::dec
+                    << '\t' << spec.name << '\t' << hex(result.original)
+                    << '\n';
+          originals.flush();
+          if (!originals)
+            throw std::runtime_error(
+                "Cannot persist original value before write");
+          if (value < spec.minimum || value > spec.maximum || unrestored) {
+            result.state = "skipped";
+            result.error = unrestored
+                               ? "An earlier register restore failed; further "
+                                 "writes stopped"
+                               : "Original value outside known safe test range";
+            register_results.push_back(result);
+            std::cout << "CAM " << sensor << ' ' << spec.name << ": SKIPPED "
+                      << result.error << std::endl;
+            continue;
+          }
+          uint32_t test_value = value < spec.maximum ? value + 1 : value - 1;
+          result.test = pack_u32(test_value);
+          result.write_attempted = true;
+          try {
+            auto ack = request(sensor, spec.command, rw_write, result.test,
+                               "write_test", {1500ms, 0});
+            result.write_ack = bool(ack) && ack.frame.data == Bytes{0, 0};
+            if (result.write_ack) {
+              auto readback = request(sensor, spec.command, rw_read, {0, 0},
+                                      "read_test", {1500ms, 1});
+              if (readback)
+                result.readback = readback.frame.data;
+              result.readback_ok =
+                  bool(readback) && result.readback == result.test;
+              if (!result.readback_ok)
+                result.error = readback.error.empty()
+                                   ? "Test value readback mismatch"
+                                   : readback.error;
+            } else
+              result.error =
+                  ack.error.empty() ? "Write ACK was not 0000" : ack.error;
+          } catch (const std::exception &e) {
+            result.error = e.what();
+          }
+          // A timed-out write may have been accepted. Restore after every
+          // attempt, even when its ACK was missing, and confirm the original
+          // bytes again.
+          auto restore =
+              request(sensor, spec.command, rw_write, result.original,
+                      "restore_original", {1500ms, 2});
+          result.restore_ack =
+              bool(restore) && restore.frame.data == Bytes{0, 0};
+          auto confirm = request(sensor, spec.command, rw_read, {0, 0},
+                                 "verify_restore", {1500ms, 2});
+          if (confirm)
+            result.restored = confirm.frame.data;
+          result.restore_ok =
+              bool(confirm) && result.restored == result.original;
+          if (!result.restore_ok) {
+            unrestored = true;
+            result.error += "; ORIGINAL VALUE NOT CONFIRMED RESTORED";
+          }
+          result.state = result.write_ack && result.readback_ok &&
+                                 result.restore_ack && result.restore_ok
+                             ? "passed"
+                             : "failed";
+          std::cout << "CAM " << sensor << ' ' << spec.name << ": "
+                    << result.state << " original=" << value
+                    << " test=" << test_value
+                    << " restored=" << (result.restore_ok ? "yes" : "NO") << ' '
                     << result.error << std::endl;
-          continue;
+          register_results.push_back(std::move(result));
         }
-        result.original = original.frame.data;
-        uint32_t value = read_u32(result.original);
-        originals << sensor << '\t' << std::hex << spec.command << std::dec
-                  << '\t' << spec.name << '\t' << hex(result.original) << '\n';
-        originals.flush();
-        if (!originals)
-          throw std::runtime_error(
-              "Cannot persist original value before write");
-        if (value < spec.minimum || value > spec.maximum || unrestored) {
-          result.state = "skipped";
-          result.error =
-              unrestored
-                  ? "An earlier register restore failed; further writes stopped"
-                  : "Original value outside known safe test range";
-          register_results.push_back(result);
-          std::cout << "CAM " << sensor << ' ' << spec.name << ": SKIPPED "
-                    << result.error << std::endl;
-          continue;
-        }
-        uint32_t test_value = value < spec.maximum ? value + 1 : value - 1;
-        result.test = pack_u32(test_value);
-        result.write_attempted = true;
-        try {
-          auto ack = request(sensor, spec.command, rw_write, result.test,
-                             "write_test", {1500ms, 0});
-          result.write_ack = bool(ack) && ack.frame.data == Bytes{0, 0};
-          if (result.write_ack) {
-            auto readback = request(sensor, spec.command, rw_read, {0, 0},
-                                    "read_test", {1500ms, 1});
-            if (readback)
-              result.readback = readback.frame.data;
-            result.readback_ok =
-                bool(readback) && result.readback == result.test;
-            if (!result.readback_ok)
-              result.error = readback.error.empty()
-                                 ? "Test value readback mismatch"
-                                 : readback.error;
-          } else
-            result.error =
-                ack.error.empty() ? "Write ACK was not 0000" : ack.error;
-        } catch (const std::exception &e) {
-          result.error = e.what();
-        }
-        // A timed-out write may have been accepted. Restore after every
-        // attempt, even when its ACK was missing, and confirm the original
-        // bytes again.
-        auto restore = request(sensor, spec.command, rw_write, result.original,
-                               "restore_original", {1500ms, 2});
-        result.restore_ack = bool(restore) && restore.frame.data == Bytes{0, 0};
-        auto confirm = request(sensor, spec.command, rw_read, {0, 0},
-                               "verify_restore", {1500ms, 2});
-        if (confirm)
-          result.restored = confirm.frame.data;
-        result.restore_ok = bool(confirm) && result.restored == result.original;
-        if (!result.restore_ok) {
-          unrestored = true;
-          result.error += "; ORIGINAL VALUE NOT CONFIRMED RESTORED";
-        }
-        result.state = result.write_ack && result.readback_ok &&
-                               result.restore_ack && result.restore_ok
-                           ? "passed"
-                           : "failed";
-        std::cout << "CAM " << sensor << ' ' << spec.name << ": "
-                  << result.state << " original=" << value
-                  << " test=" << test_value
-                  << " restored=" << (result.restore_ok ? "yes" : "NO") << ' '
-                  << result.error << std::endl;
-        register_results.push_back(std::move(result));
       }
-    }
     for (uint16_t sensor = 1; sensor <= 4; ++sensor) {
       for (bool rearranged : {true, false})
         for (unsigned index = 0; index < (quick ? 1u : 3u); ++index) {
@@ -288,6 +300,7 @@ int main(int argc, char **argv) {
               result.cloud = frame->data.points3d.size();
               result.interp = frame->data.interpolated.size();
               save_image_pgm((output / (result.stem + ".pgm")).string(), image);
+              result.captured = true;
               result.success = result.command_matches;
               if (!result.command_matches)
                 result.error =
@@ -321,13 +334,15 @@ int main(int argc, char **argv) {
     auto stats = device.statistics();
     device.close();
     simulator.stop();
-    size_t reg_pass = 0, image_pass = 0;
+    size_t reg_pass = 0, image_pass = 0, capture_pass = 0;
     std::ofstream summary(output / "summary.json");
     summary << "{\n\"simulated\":" << (simulated ? "true" : "false")
             << ",\"heartbeat_skipped\":true,\"crc_verified\":"
             << (compat ? "false" : "true")
             << ",\"target\":" << quoted(options.device_ip)
             << ",\"local\":" << quoted(options.local_ip)
+            << ",\"image_layout_override\":"
+            << quoted(force_raw ? "fpga_raw" : "declared")
             << ",\"unrestored_register\":" << (unrestored ? "true" : "false")
             << ",\n\"registers\":[\n";
     for (size_t n = 0; n < register_results.size(); ++n) {
@@ -350,10 +365,12 @@ int main(int argc, char **argv) {
     for (size_t n = 0; n < image_results.size(); ++n) {
       const auto &r = image_results[n];
       image_pass += r.success;
+      capture_pass += r.captured;
       summary << (n ? ",\n" : "") << "{\"device\":" << r.device
               << ",\"rearranged\":" << (r.rearranged ? "true" : "false")
               << ",\"index\":" << r.index + 1
               << ",\"success\":" << (r.success ? "true" : "false")
+              << ",\"captured\":" << (r.captured ? "true" : "false")
               << ",\"command\":" << r.command
               << ",\"message_id\":" << r.message_id << ",\"width\":" << r.width
               << ",\"height\":" << r.height
@@ -375,10 +392,12 @@ int main(int argc, char **argv) {
             << ",\"timeouts\":" << stats.request_timeouts
             << ",\"unmatched\":" << stats.unmatched_responses
             << "},\"register_pass\":" << reg_pass
-            << ",\"image_pass\":" << image_pass << "}\n";
+            << ",\"image_pass\":" << image_pass
+            << ",\"image_capture_pass\":" << capture_pass << "}\n";
     std::cout << "SUMMARY registers=" << reg_pass << '/'
               << register_results.size() << " images=" << image_pass << '/'
               << image_results.size() << " tx=" << stats.tx_packets
+              << " captured=" << capture_pass << '/' << image_results.size()
               << " rx=" << stats.rx_packets
               << " malformed=" << stats.malformed_packets << " restore="
               << (unrestored ? "FAILED" : "confirmed where written")

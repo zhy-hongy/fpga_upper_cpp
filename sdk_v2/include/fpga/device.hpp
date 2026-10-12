@@ -89,12 +89,18 @@ public:
     Response reset_buffer(uint16_t device);
     Response get_batch_data(uint16_t device, bool all=false);
     Response get_camera_data(uint16_t device, bool rearranged=false, RequestOptions options={});
-    // Flow-controlled 0x0300 polling: at most one outstanding frame per sensor.
+    // Flow-controlled 0x0300 polling. By default one frame request is in flight
+    // across the shared forwarding board; sensors are polled round-robin.
+    // Firmware supporting parallel image transactions may opt into up to four.
+    void set_capture_concurrency(size_t max_inflight);
     void start_capture(uint8_t sensor_mask=0x0f, bool rearranged=false,
                        std::chrono::milliseconds interval=std::chrono::milliseconds{40});
     void stop_capture();
     void heartbeat(); // fire-and-forget; no timeout retry storm
     void set_image_dimensions(uint16_t device, uint32_t width, uint32_t height);
+    // Override inconsistent firmware layout metadata without changing the wire
+    // request. Declared follows the reply command; FpgaRaw forces lane reorder.
+    void set_image_layout(uint16_t device, ImageLayout layout);
     std::shared_ptr<const CameraEvent> latest_frame(uint16_t device) const;
     std::shared_ptr<const CameraEvent> wait_next_frame(uint16_t device, uint64_t after_sequence,
                                 std::chrono::milliseconds timeout=std::chrono::milliseconds{1000});

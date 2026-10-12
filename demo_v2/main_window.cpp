@@ -220,7 +220,7 @@ MainWindow::MainWindow(QWidget* parent):QMainWindow(parent) {
         if(renderPending_[sensor-1].exchange(true))return;
         QMetaObject::invokeMethod(this,[this,sensor]{renderPending_[sensor-1].store(false);receiveCamera(device_.latest_frame(sensor));},Qt::QueuedConnection);
     });
-    device_.on_response([this](const fpga::Response&r){if(r&&r.frame.command==0x401){const auto data=r.frame.data;QMetaObject::invokeMethod(this,[this,data]{lastHeartbeatMs_=QDateTime::currentMSecsSinceEpoch();if(connected_){connectionStatus_->setText("●  设备在线");connectionStatus_->setStyleSheet("color:#55dfc4;");connectionStatus_->setToolTip("最新心跳状态: "+hex(data));}},Qt::QueuedConnection);}});
+    device_.on_response([this](const fpga::Response&r){if(r&&r.frame.command==0x401){const auto data=r.frame.data;QMetaObject::invokeMethod(this,[this,data]{lastHeartbeatMs_=QDateTime::currentMSecsSinceEpoch();if(connected_&&heartbeatEnabled_){connectionStatus_->setText("●  设备在线");connectionStatus_->setStyleSheet("color:#55dfc4;");connectionStatus_->setToolTip("最新心跳状态: "+hex(data));}},Qt::QueuedConnection);}});
     device_.on_batch([this](const fpga::BatchEvent& e) { QMetaObject::invokeMethod(this,[this,e]{receiveBatch(e);},Qt::QueuedConnection); });
     device_.on_error([this](const std::string& m) { QString value=QString::fromStdString(m);QMetaObject::invokeMethod(this,[this,value]{log(value,true);},Qt::QueuedConnection); });
     statsTimer_=new QTimer(this);statsTimer_->setInterval(500);connect(statsTimer_,&QTimer::timeout,this,[this]{updateStatistics();});statsTimer_->start();
@@ -242,6 +242,9 @@ void MainWindow::buildUi() {
     auto connection=new QHBoxLayout;mode_=new QComboBox;mode_->addItems({"UDP 模拟设备","真实 FPGA"});mode_->setMinimumWidth(144);connection->addWidget(mode_);
     connection->addWidget(new QLabel("设备"));deviceIp_=new QLineEdit("192.168.10.10");deviceIp_->setMaximumWidth(155);connection->addWidget(deviceIp_);devicePort_=spin(1,65535,60000);devicePort_->setMaximumWidth(96);connection->addWidget(devicePort_);
     connection->addWidget(new QLabel("本机"));localIp_=new QLineEdit("0.0.0.0");localIp_->setMaximumWidth(140);connection->addWidget(localIp_);localPort_=spin(0,65535,60000);localPort_->setMaximumWidth(96);connection->addWidget(localPort_);
+    skipHeartbeat_=new QCheckBox("跳过心跳");skipHeartbeat_->setEnabled(false);skipHeartbeat_->setToolTip("用于未实现 0x0401 心跳的真实设备。连接时读取相机曝光寄存器确认通信，不发送周期心跳。");connection->addWidget(skipHeartbeat_);
+    connect(mode_,&QComboBox::currentIndexChanged,this,[this]{bool hardware=mode_->currentIndex()==1;if(!hardware)skipHeartbeat_->setChecked(false);skipHeartbeat_->setEnabled(hardware&&!connected_&&!connecting_);});
+    connect(skipHeartbeat_,&QCheckBox::toggled,this,[this](bool checked){if(checked&&mode_->currentIndex()==0)skipHeartbeat_->setChecked(false);});
     connectButton_=button("连接设备",connection,true);connect(connectButton_,&QPushButton::clicked,this,[this]{connected_?disconnectDevice():connectDevice();});connection->addStretch();
     captureButton_=button("启动采集",connection,true);captureButton_->setCheckable(true);connect(captureButton_,&QPushButton::clicked,this,[this](bool enabled){capture(enabled);});
     auto single=button("单帧",connection);connect(single,&QPushButton::clicked,this,[this]{singleCapture();});auto save=button("导出数据",connection);connect(save,&QPushButton::clicked,this,[this]{exportCurrentData();});layout->addLayout(connection);
@@ -254,6 +257,9 @@ void MainWindow::buildUi() {
     profile_=new ProfileView;dl->addWidget(profile_,1);connect(plotMode_,&QComboBox::currentIndexChanged,this,[this]{auto f=lastFrames_[selectedCamera()-1];if(f)receiveCamera(f);});split->addWidget(displays);
     auto panel=new QWidget;panel->setMinimumWidth(386);panel->setMaximumWidth(520);auto pl=new QVBoxLayout(panel);pl->setContentsMargins(7,0,0,0);pl->setSpacing(10);auto selector=new QHBoxLayout;selector->addWidget(new QLabel("操作目标"));target_=new QComboBox;target_->addItems({"全部相机","CAM 1","CAM 2","CAM 3","CAM 4","FPGA 主控"});selector->addWidget(target_,1);pl->addLayout(selector);
     auto imageOptions=new QHBoxLayout;imageOptions->addWidget(new QLabel("图像请求"));imageRequest_=new QComboBox;imageRequest_->addItems({"FPGA 已重排","原始 · SDK 重排"});imageOptions->addWidget(imageRequest_,1);captureInterval_=spin(10,5000,40);captureInterval_->setSuffix(" ms");captureInterval_->setMaximumWidth(105);imageOptions->addWidget(captureInterval_);pl->addLayout(imageOptions);
+    auto decodeOptions=new QHBoxLayout;decodeOptions->addWidget(new QLabel("图像解码"));imageLayout_=new QComboBox;
+    imageLayout_->addItem("按固件声明",static_cast<int>(fpga::ImageLayout::Declared));imageLayout_->addItem("强制原始重排",static_cast<int>(fpga::ImageLayout::FpgaRaw));imageLayout_->addItem("标准行优先",static_cast<int>(fpga::ImageLayout::Standard));imageLayout_->addItem("自动检测",static_cast<int>(fpga::ImageLayout::Auto));
+    imageLayout_->setToolTip("仅决定 SDK 本地图像解码，不改变 0x0300 请求或相机寄存器。固件声明与实际像素布局不一致时，可显式选择原始重排。");decodeOptions->addWidget(imageLayout_,1);pl->addLayout(decodeOptions);
     controls_=new QTabWidget;controls_->addTab(buildParameters(),"参数");controls_->addTab(make_scroll(buildTrigger()),"触发 / 批");controls_->addTab(make_scroll(buildInterpolation()),"插值");controls_->addTab(make_scroll(buildSystem()),"系统");controls_->addTab(make_scroll(buildRegisters()),"寄存器");controls_->addTab(make_scroll(buildAnalysis()),"算法");pl->addWidget(controls_,1);split->addWidget(panel);split->setSizes({1000,420});
     connect(target_,&QComboBox::currentIndexChanged,this,[this]{rebuildParameters();});rebuildParameters();
     auto logHeader=new QHBoxLayout;auto ltitle=new QLabel("通信日志");ltitle->setStyleSheet("font-weight:600;");logHeader->addWidget(ltitle);auto hint=new QLabel("控制请求在工作线程执行 · 图像与控制共用 SDK");hint->setObjectName("muted");logHeader->addSpacing(14);logHeader->addWidget(hint);logHeader->addStretch();auto clear=button("清空",logHeader);connect(clear,&QPushButton::clicked,this,[this]{logs_->clear();});layout->addLayout(logHeader);
@@ -316,7 +322,7 @@ QWidget* MainWindow::buildSystem() {
 }
 
 QWidget* MainWindow::buildRegisters() {
-    auto page=new QWidget;auto l=new QVBoxLayout(page);l->setContentsMargins(10,12,10,12);auto form=new QFormLayout;rawDevice_=spin(0,4,1);form->addRow("设备编号",rawDevice_);rawCommand_=new QLineEdit("0001");form->addRow("功能码 / HEX",rawCommand_);rawRw_=new QComboBox;rawRw_->addItems({"读取 · 0x80","写入 · 0x40"});form->addRow("读写标志",rawRw_);l->addLayout(form);l->addWidget(new QLabel("请求负载 / HEX"));rawPayload_=new QPlainTextEdit("00 00");rawPayload_->setMaximumHeight(120);l->addWidget(rawPayload_);auto send=button("发送原始寄存器命令",l,true);connect(send,&QPushButton::clicked,this,[this]{try{bool ok=false;uint16_t command=rawCommand_->text().toUShort(&ok,16);if(!ok)throw std::invalid_argument("功能码不是有效的 16 位 HEX");auto data=fromHex(rawPayload_->toPlainText());auto rw=rawRw_->currentIndex()?fpga::rw_write:fpga::rw_read;auto t=rawDevice_->value();submit("寄存器命令",[this,t,command,rw,data]{return device_.request(t,command,rw,data);},[this](const fpga::Response&r){rawResponse_->setPlainText(QString("设备 %1 · 功能码 0x%2 · MsgID %3\n\n%4\n\n完整命令帧\n%5").arg(r.frame.device).arg(r.frame.command,4,16,QChar('0')).arg(r.frame.message_id).arg(hex(r.frame.data)).arg(hex(fpga::encode_command(r.frame))));});}catch(const std::exception&e){log(QString::fromUtf8(e.what()),true);}});
+    auto page=new QWidget;auto l=new QVBoxLayout(page);l->setContentsMargins(10,12,10,12);auto form=new QFormLayout;rawDevice_=spin(0,4,1);form->addRow("设备编号",rawDevice_);rawCommand_=new QLineEdit("0001");form->addRow("功能码 / HEX",rawCommand_);rawRw_=new QComboBox;rawRw_->addItems({"读取 · 0x80","写入 · 0x40"});form->addRow("读写标志",rawRw_);l->addLayout(form);l->addWidget(new QLabel("请求负载 / HEX"));rawPayload_=new QPlainTextEdit("00 00");rawPayload_->setMaximumHeight(120);l->addWidget(rawPayload_);auto send=button("发送原始寄存器命令",l,true);connect(send,&QPushButton::clicked,this,[this]{try{bool ok=false;uint16_t command=rawCommand_->text().toUShort(&ok,16);if(!ok)throw std::invalid_argument("功能码不是有效的 16 位 HEX");if(command==0x401&&!heartbeatEnabled_)throw std::invalid_argument("当前连接已跳过心跳，未发送 0x0401 命令");auto data=fromHex(rawPayload_->toPlainText());auto rw=rawRw_->currentIndex()?fpga::rw_write:fpga::rw_read;auto t=rawDevice_->value();submit("寄存器命令",[this,t,command,rw,data]{return device_.request(t,command,rw,data);},[this](const fpga::Response&r){rawResponse_->setPlainText(QString("设备 %1 · 功能码 0x%2 · MsgID %3\n\n%4\n\n完整命令帧\n%5").arg(r.frame.device).arg(r.frame.command,4,16,QChar('0')).arg(r.frame.message_id).arg(hex(r.frame.data)).arg(hex(fpga::encode_command(r.frame))));});}catch(const std::exception&e){log(QString::fromUtf8(e.what()),true);}});
     l->addWidget(new QLabel("应答数据与协议帧"));rawResponse_=new QPlainTextEdit;rawResponse_->setReadOnly(true);rawResponse_->setMinimumHeight(180);l->addWidget(rawResponse_,1);auto note=new QLabel("通过 SDK 校验帧头、帧长与 CRC，并按设备、功能码、消息 ID、读写标志匹配应答。");note->setObjectName("muted");note->setWordWrap(true);l->addWidget(note);return page;
 }
 
@@ -343,22 +349,49 @@ void MainWindow::submit(const QString& label,std::function<fpga::Response()> ope
     enqueue([this,label,operation=std::move(operation),done=std::move(done)]{try{auto response=operation();QMetaObject::invokeMethod(this,[this,label,response,done]{if(response){log(label+" ✓");try{if(done)done(response);}catch(const std::exception&e){log(QString::fromUtf8(e.what()),true);}}else log(label+"失败: "+QString::fromStdString(response.error),true);},Qt::QueuedConnection);}catch(const std::exception&e){QString m=QString::fromUtf8(e.what());QMetaObject::invokeMethod(this,[this,label,m]{log(label+"失败: "+m,true);},Qt::QueuedConnection);}});
 }
 void MainWindow::connectDevice() {
-    bool sim=mode_->currentIndex()==0;fpga::ConnectionOptions o;o.device_ip=deviceIp_->text().toStdString();o.device_port=devicePort_->value();o.local_ip=localIp_->text().toStdString();o.local_port=localPort_->value();connectButton_->setEnabled(false);
-    enqueue([this,sim,o]()mutable{try{std::lock_guard<std::mutex> lock(lifecycleMutex_);if(sim){simulator_.start();o.device_ip="127.0.0.1";o.device_port=simulator_.port();o.local_ip="127.0.0.1";o.local_port=0;}device_.open(o);auto probe=device_.read(0,0x401,{std::chrono::milliseconds{1000},0});if(!probe){device_.close();throw std::runtime_error("设备心跳未确认: "+probe.error);}QMetaObject::invokeMethod(this,[this,sim,o]{setConnected(true);log(QString("%1 · %2:%3 → 本地 :%4").arg(sim?"UDP 模拟设备已连接":"FPGA 已连接").arg(QString::fromStdString(o.device_ip)).arg(o.device_port).arg(device_.local_port()));},Qt::QueuedConnection);}catch(const std::exception&e){auto m=QString::fromUtf8(e.what());simulator_.stop();QMetaObject::invokeMethod(this,[this,m]{setConnected(false);log("连接失败: "+m,true);},Qt::QueuedConnection);}});
+    if(connected_||connecting_)return;
+    bool sim=mode_->currentIndex()==0,skip=!sim&&skipHeartbeat_->isChecked();auto layout=static_cast<fpga::ImageLayout>(imageLayout_->currentData().toInt());fpga::ConnectionOptions o;o.device_ip=deviceIp_->text().toStdString();o.device_port=devicePort_->value();o.local_ip=localIp_->text().toStdString();o.local_port=localPort_->value();
+    connecting_=true;connectButton_->setEnabled(false);mode_->setEnabled(false);skipHeartbeat_->setEnabled(false);deviceIp_->setEnabled(false);devicePort_->setEnabled(false);localIp_->setEnabled(false);localPort_->setEnabled(false);
+    enqueue([this,sim,skip,layout,o]()mutable{try{
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        if(sim){simulator_.start();o.device_ip="127.0.0.1";o.device_port=simulator_.port();o.local_ip="127.0.0.1";o.local_port=0;}
+        device_.open(o);fpga::Response probe;uint16_t probeCamera=0;
+        if(skip){
+            for(uint16_t camera=1;camera<=4;++camera)device_.set_image_layout(camera,layout);
+            std::string errors;
+            for(uint16_t camera=1;camera<=4;++camera){
+                probe=device_.get_camera_data(camera,true,{std::chrono::milliseconds{1500},0});
+                if(probe&&probe.frame.data.size()>2){probeCamera=camera;break;}
+                probe=device_.read(camera,1,{std::chrono::milliseconds{1000},1});
+                if(probe&&probe.frame.data.size()==4){probeCamera=camera;break;}
+                if(!errors.empty())errors+="; ";errors+="CAM "+std::to_string(camera)+": "+(probe?"invalid camera READ payload":probe.error);
+            }
+            if(!probeCamera)throw std::runtime_error("相机图像/寄存器 READ 未确认通信: "+errors);
+        }else{
+            probe=device_.read(0,0x401,{std::chrono::milliseconds{1000},0});
+            if(!probe)throw std::runtime_error("设备心跳未确认: "+probe.error);
+        }
+        QMetaObject::invokeMethod(this,[this,sim,skip,o,probeCamera,probe]{
+            heartbeatEnabled_=!skip;setConnected(true);
+            if(skip){if(probe.frame.command==1){confirmedParameters_[{probeCamera,1}]=probe.frame.data;updateConfirmedParameter(1);}log(QString("跳过心跳 · CAM %1 %2 READ 已确认通信").arg(probeCamera).arg(probe.frame.command==1?"曝光寄存器":"0x0300 图像"));}
+            log(QString("%1 · %2:%3 → 本地 :%4").arg(sim?"UDP 模拟设备已连接":"FPGA 已连接").arg(QString::fromStdString(o.device_ip)).arg(o.device_port).arg(device_.local_port()));
+        },Qt::QueuedConnection);
+    }catch(const std::exception&e){auto m=QString::fromUtf8(e.what());device_.close();simulator_.stop();QMetaObject::invokeMethod(this,[this,m]{heartbeatEnabled_=true;setConnected(false);log("连接失败: "+m,true);},Qt::QueuedConnection);}});
 }
 void MainWindow::disconnectDevice() {connectButton_->setEnabled(false);captureButton_->setChecked(false);capturing_=false;enqueue([this]{std::lock_guard<std::mutex> lock(lifecycleMutex_);device_.close();simulator_.stop();QMetaObject::invokeMethod(this,[this]{setConnected(false);log("设备已断开");},Qt::QueuedConnection);});}
 void MainWindow::setConnected(bool value) {
-    connected_=value;connectButton_->setEnabled(true);connectButton_->setText(value?"断开连接":"连接设备");mode_->setEnabled(!value);deviceIp_->setEnabled(!value);devicePort_->setEnabled(!value);localIp_->setEnabled(!value);localPort_->setEnabled(!value);connectionStatus_->setText(value?"●  设备在线":"●  未连接");connectionStatus_->setStyleSheet(value?"color:#55dfc4;":"color:#94a5ba;");bottomStatus_->setText(value?"设备在线 · 参数写入后等待应答确认":"准备就绪");captureButton_->setText("启动采集");
+    connected_=value;connecting_=false;capturing_=false;connectButton_->setEnabled(true);connectButton_->setText(value?"断开连接":"连接设备");mode_->setEnabled(!value);skipHeartbeat_->setEnabled(!value&&mode_->currentIndex()==1);deviceIp_->setEnabled(!value);devicePort_->setEnabled(!value);localIp_->setEnabled(!value);localPort_->setEnabled(!value);imageRequest_->setEnabled(true);imageLayout_->setEnabled(true);captureInterval_->setEnabled(true);captureButton_->setChecked(false);
+    connectionStatus_->setText(value?(heartbeatEnabled_?"●  设备在线":"●  通信正常 · 未启用心跳"):"●  未连接");connectionStatus_->setToolTip(value&&!heartbeatEnabled_?"连接已通过相机曝光寄存器 READ 确认。未发送 0x0401 心跳，实时数据见下方统计。":"");connectionStatus_->setStyleSheet(value?"color:#55dfc4;":"color:#94a5ba;");bottomStatus_->setText(value?(heartbeatEnabled_?"设备在线 · 参数写入后等待应答确认":"通信正常 · 未启用心跳"):"准备就绪");captureButton_->setText("启动采集");
     if(value){lastHeartbeatMs_=QDateTime::currentMSecsSinceEpoch();confirmedParameters_.clear();frameCounts_={};lastFrames_={};for(auto frame:frames_)frame->setFrame({},0);for(int row=0;row<parameters_->rowCount();++row)updateConfirmedParameter(parameters_->item(row,0)->data(Qt::UserRole).toUInt());}
 }
 std::vector<uint16_t> MainWindow::cameraTargets()const {int target=target_->currentIndex();if(target>=1&&target<=4)return{static_cast<uint16_t>(target)};return{1,2,3,4};}
 uint16_t MainWindow::selectedCamera()const {int target=target_->currentIndex();return static_cast<uint16_t>(target>=1&&target<=4?target:1);}
-void MainWindow::capture(bool enabled) {if(!connected_){captureButton_->setChecked(false);log("请先连接设备",true);return;}capturing_=enabled;imageRequest_->setEnabled(!enabled);captureInterval_->setEnabled(!enabled);captureButton_->setText(enabled?"停止采集":"启动采集");uint8_t mask=0;for(auto t:cameraTargets())mask|=1<<(t-1);bool rearranged=imageRequest_->currentIndex()==0;int interval=captureInterval_->value();enqueue([this,enabled,mask,rearranged,interval]{if(enabled)device_.start_capture(mask,rearranged,std::chrono::milliseconds{interval});else device_.stop_capture();});log(enabled?"已启动四路图像轮询 · 每路单请求在途":"图像采集已停止");}
-void MainWindow::singleCapture() {auto targets=cameraTargets();bool rearranged=imageRequest_->currentIndex()==0;submit("单帧采集",[this,targets,rearranged]{fpga::Response r;for(auto t:targets){r=device_.get_camera_data(t,rearranged);if(!r)return r;}return r;});}
+void MainWindow::capture(bool enabled) {if(!connected_){captureButton_->setChecked(false);log("请先连接设备",true);return;}capturing_=enabled;imageRequest_->setEnabled(!enabled);imageLayout_->setEnabled(!enabled);captureInterval_->setEnabled(!enabled);captureButton_->setText(enabled?"停止采集":"启动采集");uint8_t mask=0;for(auto t:cameraTargets())mask|=1<<(t-1);bool rearranged=imageRequest_->currentIndex()==0;int interval=captureInterval_->value();auto layout=static_cast<fpga::ImageLayout>(imageLayout_->currentData().toInt());enqueue([this,enabled,mask,rearranged,interval,layout]{if(enabled){for(uint16_t camera=1;camera<=4;++camera)device_.set_image_layout(camera,layout);device_.start_capture(mask,rearranged,std::chrono::milliseconds{interval});}else device_.stop_capture();});log(enabled?"已启动四路串行轮询 · 转发板最多一帧在途 · 解码: "+imageLayout_->currentText():"图像采集已停止");}
+void MainWindow::singleCapture() {auto targets=cameraTargets();bool rearranged=imageRequest_->currentIndex()==0;auto layout=static_cast<fpga::ImageLayout>(imageLayout_->currentData().toInt());submit("单帧采集",[this,targets,rearranged,layout]{for(uint16_t camera=1;camera<=4;++camera)device_.set_image_layout(camera,layout);fpga::Response r;for(auto t:targets){r=device_.get_camera_data(t,rearranged);if(!r)return r;}return r;});}
 void MainWindow::rebuildParameters() {
     parameters_->setRowCount(0);bool fpgaTarget=target_->currentIndex()==5;
     for(const auto& spec:fpga::command_specs()){
-        bool global=spec.device_target==fpga::DeviceTarget::Fpga;if(global!=fpgaTarget)continue;
+        bool global=spec.device_target==fpga::DeviceTarget::Fpga;if(spec.device_target!=fpga::DeviceTarget::All&&global!=fpgaTarget)continue;
         if(spec.code>=0x300&&spec.code<=0x401)continue;if(spec.code==0x203||spec.code==0x204||spec.code==0x205||spec.code==0x206)continue;
         if(spec.code==0x501||spec.code==0x505)continue;int row=parameters_->rowCount();parameters_->insertRow(row);
         auto name=new QTableWidgetItem(chineseName(spec.code));name->setData(Qt::UserRole,spec.code);name->setToolTip(QString("0x%1 · 写入 %2B · 读取 %3B").arg(spec.code,4,16,QChar('0')).arg(spec.write_size).arg(spec.read_size));name->setFlags(name->flags()&~Qt::ItemIsEditable);parameters_->setItem(row,0,name);
@@ -368,9 +401,9 @@ void MainWindow::rebuildParameters() {
 }
 
 void MainWindow::updateConfirmedParameter(uint16_t command) {
-    auto targets=target_->currentIndex()==5?std::vector<uint16_t>{0}:cameraTargets();QStringList detail;QString common;bool different=false;bool first=true;
-    for(auto t:targets){auto it=confirmedParameters_.find({t,command});if(it==confirmedParameters_.end()){detail<<QString("CAM %1: 未回读").arg(t);if(!first)different=true;continue;}auto text=decodeParameter(command,it->second);detail<<QString("%1 %2: %3").arg(t?"CAM":"FPGA").arg(t).arg(text);if(first){common=text;first=false;}else if(common!=text)different=true;}
-    for(int row=0;row<parameters_->rowCount();++row)if(parameters_->item(row,0)->data(Qt::UserRole).toUInt()==command){auto item=parameters_->item(row,2);item->setText(first?"—":different?"各路不同":common);item->setToolTip(detail.join('\n'));item->setForeground(QColor(first?"#8597ad":"#62dac7"));}
+    auto targets=target_->currentIndex()==5?std::vector<uint16_t>{0}:cameraTargets();QStringList detail;QString common;bool different=false;bool first=true;bool missing=false;
+    for(auto t:targets){auto it=confirmedParameters_.find({t,command});if(it==confirmedParameters_.end()){detail<<QString("CAM %1: 未回读").arg(t);missing=true;continue;}auto text=decodeParameter(command,it->second);detail<<QString("%1 %2: %3").arg(t?"CAM":"FPGA").arg(t).arg(text);if(first){common=text;first=false;}else if(common!=text)different=true;}
+    for(int row=0;row<parameters_->rowCount();++row)if(parameters_->item(row,0)->data(Qt::UserRole).toUInt()==command){auto item=parameters_->item(row,2);item->setText(first?"—":different?"各路不同":missing?common+"（部分回读）":common);item->setToolTip(detail.join('\n'));item->setForeground(QColor(first?"#8597ad":"#62dac7"));}
 }
 
 fpga::Bytes MainWindow::encodeParameter(uint16_t command,const QString& text)const {
@@ -409,7 +442,11 @@ void MainWindow::writeParameter() {
 void MainWindow::updateInterpolationPreview() {try{auto c=fpga::InterpolationConfig::from_mm(interpStart_->value(),interpEnd_->value(),interpInterval_->value(),interpCount_->value());interpPreview_->setText(QString("%1 点 · 首点 %2 mm\n实际末点 %3 mm\n量化间隔 %4 mm\nQ16.16: %5 / %6 / %7").arg(c.count).arg(c.start_mm(),0,'g',8).arg(c.last_mm(),0,'g',8).arg(c.interval_mm(),0,'f',8).arg(c.x_start).arg(c.x_end).arg(c.interval));}catch(const std::exception&e){interpPreview_->setText(QString::fromUtf8(e.what()));}}
 void MainWindow::updateStatistics() {
     auto s=device_.statistics();frameMetric_->setText(QString("%1 帧").arg(s.decoded_images));trafficMetric_->setText(QString("%1 MB").arg(s.rx_bytes/1048576.0,0,'f',2));integrityMetric_->setText(QString("%1 异常  /  %2 重试").arg(s.malformed_packets+s.incomplete_frames).arg(s.retries));
-    if(connected_){if(++heartbeatTick_%2==0)device_.heartbeat();bool fresh=QDateTime::currentMSecsSinceEpoch()-lastHeartbeatMs_<3500;if(!fresh){connectionStatus_->setText("●  心跳超时");connectionStatus_->setStyleSheet("color:#f2ae68;");}bottomStatus_->setText(QString("%1 · 接收 %2 包 · 完整帧 %3 · 在途请求 %4 · 队列 %5").arg(fresh?"在线":"心跳超时").arg(s.rx_packets).arg(s.assembled_frames).arg(s.pending_requests).arg(s.queued_events));}
+    if(connected_){
+        QString state="通信正常 · 未启用心跳";
+        if(heartbeatEnabled_){if(++heartbeatTick_%2==0)device_.heartbeat();bool fresh=QDateTime::currentMSecsSinceEpoch()-lastHeartbeatMs_<3500;state=fresh?"在线":"心跳超时";if(!fresh){connectionStatus_->setText("●  心跳超时");connectionStatus_->setStyleSheet("color:#f2ae68;");}}
+        bottomStatus_->setText(QString("%1 · 接收 %2 包 · 完整帧 %3 · 在途请求 %4 · 队列 %5").arg(state).arg(s.rx_packets).arg(s.assembled_frames).arg(s.pending_requests).arg(s.queued_events));
+    }
 }
 void MainWindow::log(const QString& message,bool error) {logs_->appendPlainText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz")+ (error?"  [ERROR]  ":"  [INFO]   ")+message);if(smoke_&&error)smokeFailed_=true;}
 
@@ -453,11 +490,45 @@ void MainWindow::startSimulation() {
     connect(timer,&QTimer::timeout,this,[this,timer,attempts]{if(connected_){timer->stop();timer->deleteLater();delete attempts;captureButton_->setChecked(true);capture(true);readParameters(true);}else if(++*attempts>=100){timer->stop();timer->deleteLater();delete attempts;}});timer->start();
 }
 
+void MainWindow::startHardware(bool skipHeartbeat,const QString& previewPath,fpga::ImageLayout imageLayout) {
+    mode_->setCurrentIndex(1);skipHeartbeat_->setChecked(skipHeartbeat);
+    deviceIp_->setText("192.168.10.10");localIp_->setText("192.168.10.100");devicePort_->setValue(60000);localPort_->setValue(60000);
+    target_->setCurrentIndex(0);imageRequest_->setCurrentIndex(0);imageLayout_->setCurrentIndex(imageLayout_->findData(static_cast<int>(imageLayout)));
+    if(imageLayout==fpga::ImageLayout::FpgaRaw)log("实机兼容 · 本固件声明标准图像，但像素实际交织；显式原始重排仅作用于 SDK 本地解码");
+    connectDevice();
+    const auto deadline=QDateTime::currentMSecsSinceEpoch()+8000;
+    auto timer=new QTimer(this);timer->setInterval(100);
+    connect(timer,&QTimer::timeout,this,[this,timer,deadline,previewPath,started=false]()mutable{
+        if(connected_&&!started){captureButton_->setChecked(true);capture(true);started=true;}
+        if(previewPath.isEmpty()){
+            if(started||(!connecting_&&!connected_)||QDateTime::currentMSecsSinceEpoch()>=deadline){timer->stop();timer->deleteLater();}
+            return;
+        }
+        bool complete=connected_&&started;for(auto count:frameCounts_)complete=complete&&count>0;
+        if(!complete&&QDateTime::currentMSecsSinceEpoch()<deadline)return;
+        timer->stop();timer->deleteLater();
+        if(capturing_){captureButton_->setChecked(false);capture(false);}
+        updateStatistics();
+        log(complete?"硬件预览完成 · 四路 0x0300 图像均已接收":"硬件预览未完成 · 连接失败或 8 秒内未收到四路图像",!complete);
+        bool saved=grab().save(previewPath);if(!saved)log("硬件预览截图保存失败: "+previewPath,true);
+        QFile logfile(previewPath+".log");if(logfile.open(QIODevice::WriteOnly|QIODevice::Text))logfile.write(logs_->toPlainText().toUtf8());
+        QApplication::exit(complete&&saved?0:2);
+    });timer->start();
+}
+
 void MainWindow::runSmokeTest(const QString& screenshotPath) {
-    smoke_=true;smokePath_=screenshotPath;mode_->setCurrentIndex(0);connectDevice();
+    smoke_=true;smokePath_=screenshotPath;
+    mode_->setCurrentIndex(1);skipHeartbeat_->setChecked(true);
+    if(!skipHeartbeat_->isEnabled()||!skipHeartbeat_->isChecked())log("SMOKE: 真实模式不能选择跳过心跳",true);
+    mode_->setCurrentIndex(0);
+    if(skipHeartbeat_->isEnabled()||skipHeartbeat_->isChecked())log("SMOKE: 模拟模式未禁用跳过心跳",true);
+    skipHeartbeat_->setChecked(true);
+    if(skipHeartbeat_->isChecked())log("SMOKE: 模拟模式错误启用跳过心跳",true);
+    connectDevice();
     auto timer=new QTimer(this);timer->setInterval(100);int*attempts=new int(0);
     connect(timer,&QTimer::timeout,this,[this,timer,attempts]{
         if(!connected_){if(++*attempts<80)return;timer->stop();timer->deleteLater();delete attempts;log("SMOKE: 连接超时",true);QApplication::exit(2);return;}
+        if(!heartbeatEnabled_||skipHeartbeat_->isEnabled())log("SMOKE: 模拟连接的心跳 / 选项状态错误",true);
         timer->stop();timer->deleteLater();delete attempts;captureButton_->setChecked(true);capture(true);
         parameters_->item(0,1)->setText("6500");writeParameter();
         enqueue([this]{try{

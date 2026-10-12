@@ -152,6 +152,7 @@ struct Simulator::Impl {
       registers[(d << 16) | 0x101] = pack_u32(1);
       registers[(d << 16) | 0x201] = pack_u32(100);
       registers[(d << 16) | 0x203] = pack_u32(0);
+      registers[(d << 16) | 0x402] = pack_u32(0);
       registers[(d << 16) | 0x207] = pack_interpolation_config(
           InterpolationConfig::from_mm(-32, 32, .5, 128));
       registers[(d << 16) | 0x504] = pack_model("CAM-DEMO");

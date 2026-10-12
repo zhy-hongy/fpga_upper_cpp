@@ -34,6 +34,8 @@ public:
     ~MainWindow() override;
     void runSmokeTest(const QString& screenshotPath);
     void startSimulation();
+    void startHardware(bool skipHeartbeat, const QString& previewPath = {},
+                       fpga::ImageLayout imageLayout = fpga::ImageLayout::FpgaRaw);
 
 private:
     void buildUi();
@@ -76,6 +78,8 @@ private:
     std::deque<std::function<void()>> jobs_;
     bool workerStop_ = false;
     bool connected_ = false;
+    bool connecting_ = false;
+    bool heartbeatEnabled_ = true;
     bool capturing_ = false;
     bool smoke_ = false;
     bool smokeFailed_ = false;
@@ -91,8 +95,10 @@ private:
     std::map<std::pair<uint16_t,uint16_t>,fpga::Bytes> confirmedParameters_;
     std::atomic<bool> upgradeCancelled_{false};
     QComboBox* mode_ = nullptr;
+    QCheckBox* skipHeartbeat_ = nullptr;
     QComboBox* target_ = nullptr;
     QComboBox* imageRequest_ = nullptr;
+    QComboBox* imageLayout_ = nullptr;
     QSpinBox* captureInterval_ = nullptr;
     QComboBox* plotMode_ = nullptr;
     QComboBox* triggerMode_ = nullptr;

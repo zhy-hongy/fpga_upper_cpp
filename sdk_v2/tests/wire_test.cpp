@@ -187,7 +187,7 @@ void test_transport_frames() {
 }
 
 void test_parameters() {
-    check(command_specs().size()==42,"all Python commands and two documented HDR commands represented");
+    check(command_specs().size()==43,"all current Python commands and two documented HDR commands represented");
     for (const auto& spec : command_specs()) {
         check(command_spec(spec.code)==&spec,"command metadata lookup");
         if (spec.read_only) rejects([&]{validate_write(spec.code,{});},"read-only command rejected");

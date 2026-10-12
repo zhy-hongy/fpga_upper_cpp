@@ -106,12 +106,15 @@ struct Device::Impl {
   std::array<std::shared_ptr<const CameraEvent>, 5> latest;
   std::array<uint64_t, 5> sequence{};
   std::array<std::pair<uint32_t, uint32_t>, 5> dimensions;
+  std::array<ImageLayout, 5> image_layouts;
   std::function<void(const Response &)> response_callback;
   std::function<void(std::shared_ptr<const CameraEvent>)> camera_callback;
   std::function<void(const BatchEvent &)> batch_callback;
   std::function<void(const std::string &)> error_callback;
   Statistics stats;
   uint8_t capture_mask = 0;
+  size_t capture_max_inflight = 1;
+  uint16_t capture_cursor = 1;
   uint64_t capture_generation = 0;
   bool capture_rearranged = false;
   std::chrono::milliseconds capture_interval{40};
@@ -123,6 +126,7 @@ struct Device::Impl {
     next_id = static_cast<uint16_t>(rd());
     for (auto &d : dimensions)
       d = {2048, 1152};
+    image_layouts.fill(ImageLayout::Declared);
   }
   uint16_t allocate_id() {
     auto now = Clock::now();
@@ -188,6 +192,13 @@ struct Device::Impl {
          !(capture_mask & (1 << (dev - 1))) || capture_pending[dev])) {
       p->promise.set_value(
           failure(Status::Cancelled, "Capture generation changed", p->frame));
+      return future;
+    }
+    if (capture &&
+        size_t(std::count(capture_pending.begin(), capture_pending.end(),
+                          true)) >= capture_max_inflight) {
+      p->promise.set_value(failure(
+          Status::Cancelled, "Capture concurrency limit changed", p->frame));
       return future;
     }
     try {
@@ -428,10 +439,18 @@ struct Device::Impl {
         rearranged = capture_rearranged;
         generation = capture_generation;
         auto now = Clock::now();
-        for (uint16_t d = 1; d <= 4; ++d)
+        size_t in_flight =
+            std::count(capture_pending.begin(), capture_pending.end(), true);
+        for (uint16_t n = 0; n < 4 && in_flight < capture_max_inflight; ++n) {
+          uint16_t d = uint16_t((capture_cursor - 1 + n) % 4 + 1);
           if ((capture_mask & (1 << (d - 1))) && !capture_pending[d] &&
-              now >= next_capture[d])
+              now >= next_capture[d]) {
             capture.push_back(d);
+            ++in_flight;
+          }
+        }
+        if (!capture.empty())
+          capture_cursor = uint16_t(capture.back() % 4 + 1);
       }
       for (auto d : capture)
         submit(d, 0x0300, 0x80, {0, uint8_t(rearranged ? 0 : 1)},
@@ -446,6 +465,7 @@ struct Device::Impl {
       std::function<void(const BatchEvent &)> batch;
       std::function<void(const std::string &)> error;
       std::pair<uint32_t, uint32_t> dim;
+      ImageLayout image_layout;
       {
         std::unique_lock<std::mutex> lock(mutex);
         events_ready.wait(lock, [&] { return stopping || !events.empty(); });
@@ -459,6 +479,7 @@ struct Device::Impl {
         batch = batch_callback;
         error = error_callback;
         dim = dimensions[std::min<uint16_t>(r.frame.device, 4)];
+        image_layout = image_layouts[std::min<uint16_t>(r.frame.device, 4)];
       }
       try {
         auto cmd = r.frame.command;
@@ -473,7 +494,8 @@ struct Device::Impl {
             event->data = decode_numeric_response(cmd, r.frame.data);
           else {
             try {
-              event->data = decode_camera_data(r.frame.data, cmd == 0x0300);
+              event->data =
+                  decode_camera_data(r.frame.data, cmd == 0x0300, image_layout);
             } catch (const std::exception &) {
               // Legacy image format has a fixed-size pixel plane and no block
               // tags.
@@ -732,7 +754,14 @@ void Device::start_capture(uint8_t mask, bool rearranged,
   impl_->capture_mask = mask;
   impl_->capture_rearranged = rearranged;
   impl_->capture_interval = interval;
+  impl_->capture_cursor = 1;
   impl_->next_capture = {};
+}
+void Device::set_capture_concurrency(size_t max_inflight) {
+  if (max_inflight < 1 || max_inflight > 4)
+    throw std::invalid_argument("Capture concurrency must be in 1..4");
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->capture_max_inflight = max_inflight;
 }
 void Device::stop_capture() {
   auto &i = *impl_;
@@ -752,6 +781,14 @@ void Device::set_image_dimensions(uint16_t d, uint32_t w, uint32_t h) {
       uint64_t(w) * h > impl_->options.max_frame_bytes)
     throw std::invalid_argument("Invalid image dimensions");
   impl_->dimensions[d] = {w, h};
+}
+void Device::set_image_layout(uint16_t d, ImageLayout layout) {
+  if (d < 1 || d > 4 ||
+      (layout != ImageLayout::Auto && layout != ImageLayout::Declared &&
+       layout != ImageLayout::FpgaRaw && layout != ImageLayout::Standard))
+    throw std::invalid_argument("Invalid sensor or image layout");
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->image_layouts[d] = layout;
 }
 std::shared_ptr<const CameraEvent> Device::latest_frame(uint16_t d) const {
   if (d < 1 || d > 4)
