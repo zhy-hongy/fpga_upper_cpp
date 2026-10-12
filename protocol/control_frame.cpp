@@ -61,23 +61,17 @@ ControlFrame unpack_cmd_frame(const QByteArray& frame) {
         throw std::runtime_error("Control frame tail error");
     }
 
-    // Verify CRC: covers everything from offset 2 to (size - 4)
-    // Frame structure: [Header(2)] [Data(size-6)] [CRC(2)] [Tail(2)]
-    if (frame.size() < 6) {
-        throw std::runtime_error("Control frame too short for CRC verification");
-    }
-
-    uint16_t received_crc = read16(frame.size() - 4);
-    uint16_t calculated_crc = crc16_modbus(
-        reinterpret_cast<const uint8_t*>(frame.constData()) + 2,
-        frame.size() - 6);
-
-    if (received_crc != calculated_crc) {
-        throw std::runtime_error("Control frame CRC error: expected 0x" +
-            std::string(QByteArray().setNum(calculated_crc, 16).constData()) +
-            ", got 0x" +
-            std::string(QByteArray().setNum(received_crc, 16).constData()));
-    }
+    // 内层 CRC 接收校验【已关闭】(对齐 Python 参考实现的宽松接收端):
+    // Python 测试工具 send_sine.py 默认 compute_crc=False, 内层 CRC 也写 0x0000;
+    // 同端口模式下控制应答由数据 socket 收到并走 unpack_cmd_frame 路由, 必须接受 0x0000。
+    // 发送端 pack_cmd_frame 仍会正确填 CRC。如需恢复严格校验, 取消下面注释即可。
+    // uint16_t received_crc = read16(frame.size() - 4);
+    // uint16_t calculated_crc = crc16_modbus(
+    //     reinterpret_cast<const uint8_t*>(frame.constData()) + 2,
+    //     frame.size() - 6);
+    // if (received_crc != calculated_crc) {
+    //     throw std::runtime_error("Control frame CRC error");
+    // }
 
     ControlFrame cf;
     cf.device_type = read16(2);

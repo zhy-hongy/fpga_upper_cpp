@@ -22,6 +22,10 @@ ProtocolHandler::ProtocolHandler(const Config& config, int sensor_id, QObject* p
     m_ctrl = new UDPWorker(bind_ip, config.control_port, 4 * 1024 * 1024, this);
     m_data = new UDPDataThread(bind_ip, config.data_port, config.recv_buffer_size, 4, this);
 
+    // 同端口模式: 控制端口 == 数据端口 (本机端口 == FPGA 端口 60000 等)。
+    // 此时数据 socket 先 bind 收全部单播, 控制 socket 后 bind 作为"影子"发送端。
+    m_same_port_mode = (config.control_port == config.data_port);
+
     // 跨线程信号 (sig_frame_ready -> frame_ready) 传递自定义类型 FramePacket，
     // 需注册 metatype 才能被 QueuedConnection 编组。
     qRegisterMetaType<FramePacket>("FramePacket");
@@ -52,35 +56,59 @@ void ProtocolHandler::setup_connections() {
     });
     connect(m_ctrl, &UDPWorker::sig_stopped, this, [this]() { emit disconnected(); });
     connect(m_ctrl, &UDPWorker::sig_error, this, [this](const QString& err) {
+        if (!m_ctrl_ready.load(std::memory_order_acquire))
+            emit connect_failed(err);   // 连接阶段 bind 失败 → 通知 UI 复位连接按钮
         emit error_occurred(err);
     });
 
-    // 注意：m_data->sig_cmd_received 不连接到 on_raw_response。
-    // UDPDataThread 只负责数据帧的接收和组装，控制帧的 ACK 应答只能通过
-    // UDPWorker（控制端口）接收。如果连接了 m_data->sig_cmd_received，
-    // 当 FPGA 未运行时，控制命令发送到 target_port（与 data_port 相同），
-    // 会被 UDPDataThread 自环回收，导致"写入成功但实际无应答"的假阳性。
+    // 同端口模式 (control_port == data_port): 数据 socket 先 bind, 收到控制应答,
+    // 需转发到 on_raw_response 按 msg_id 路由。正常模式 (ctrl≠data) 不连接,
+    // 避免 localhost 自环导致"写入成功但实际无应答"的假阳性。
+    if (m_same_port_mode)
+        connect(m_data, &UDPDataThread::sig_cmd_received, this, &ProtocolHandler::on_raw_response);
     connect(m_data, &UDPDataThread::sig_frame_info, this, &ProtocolHandler::data_frame_info);
     connect(m_data, &UDPDataThread::sig_resolution, this, &ProtocolHandler::data_resolution);
-    connect(m_data, &UDPDataThread::sig_frame_ready, this, &ProtocolHandler::frame_ready);
+    // sig_frame_ready → frame_ready 使用 DirectConnection：在【发出线程】(解码线程)上
+    // 直接转发。主程序 (MainWindow) 不连接 frame_ready，直接转发避免把每个 FramePacket
+    // (2.36MB) 拷进 GUI 事件循环造成 ~59MB/s 的无谓 churn / GUI 卡顿。
+    // SDK 模式 (CameraDevice) 通过 lambda 直连 frame_ready → DataDispatcher::enqueue
+    // (线程安全)，DirectConnection 下 enqueue 在解码线程执行，行为等价且安全。
+    connect(m_data, &UDPDataThread::sig_frame_ready, this, &ProtocolHandler::frame_ready,
+            Qt::DirectConnection);
     connect(m_data, &UDPDataThread::sig_error, this, [this](const QString& err) {
+        if (!m_data_ready.load(std::memory_order_acquire))
+            emit connect_failed(err);   // 连接阶段 bind 失败 → 通知 UI 复位连接按钮
         emit error_occurred(err);
     });
     connect(m_data, &UDPDataThread::sig_ready, this, [this]() {
         m_data_ready.store(true, std::memory_order_release);
+        // 数据通道就绪后才启动控制线程 —— 同端口模式下数据 socket 必须【先 bind】
+        // (Windows SO_REUSEADDR 同名端口: 先 bind 者得全部单播)。
+        if (!m_ctrl_started) {
+            m_ctrl_started = true;
+            m_ctrl->start();
+        }
     });
 }
 
 void ProtocolHandler::on_raw_response(const QByteArray& raw) {
-    // Check if it's a data packet
-    if (raw.size() >= 14) {
+    // 仅将"全帧 0x0301 图像"路由到数据通道解码。其余 (控制帧 / 非全帧 0x0301)
+    // 一律按命令帧处理——避免 handle_frame 非图像分支 emit sig_cmd_received 回到
+    // 这里再 feed_frame 造成无限递归。
+    if (raw.size() >= 18) {
         int data_len = (static_cast<uint8_t>(raw[10]) << 24) |
                        (static_cast<uint8_t>(raw[11]) << 16) |
                        (static_cast<uint8_t>(raw[12]) << 8) |
                        static_cast<uint8_t>(raw[13]);
-        if (data_len >= 1280) {
+        int cmd = (static_cast<uint8_t>(raw[4]) << 8) | static_cast<uint8_t>(raw[5]);
+        if (cmd == CMD_DATA_IMAGE_2D && data_len >= FPGA_FULL_IMAGE_SIZE) {
             m_data->feed_frame(raw);
             return;
+        }
+        if (cmd == CMD_DATA_IMAGE_2D && data_len >= 1280) {
+            // 0x0301 但尺寸不足: 诊断 + 按普通命令帧处理 (不路由, 防递归)
+            emit status_message(QString("⚠ 图像帧尺寸不匹配: Cmd=0x%1 Len=%2")
+                .arg(cmd, 4, 16, QChar('0')).arg(data_len));
         }
     }
 
@@ -100,7 +128,7 @@ void ProtocolHandler::on_raw_response(const QByteArray& raw) {
         return;
     }
 
-    // Debug: print all received response frames
+    // 打印收到的响应帧（含设备类型/功能码/MSG_ID），供 UI 调试协议。
     emit status_message(QString("← Response Dev=0x%1 Cmd=0x%2 MsgID=%3 RW=0x%4 Len=%5")
         .arg(decoded.device_type, 4, 16, QChar('0'))
         .arg(decoded.cmd_code, 4, 16, QChar('0'))
@@ -231,13 +259,13 @@ void ProtocolHandler::check_timeouts() {
     }
 }
 
-bool ProtocolHandler::send_transport(const QByteArray& frame) {
+bool ProtocolHandler::send_transport(const QByteArray& frame, int device_type) {
     if (!m_ctrl->is_ready()) {
         emit error_occurred("Network disconnected, send failed");
         return false;
     }
 
-    QVector<QByteArray> transport_frames = split_into_transport_frames(frame);
+    QVector<QByteArray> transport_frames = split_into_transport_frames(frame, MAX_TRANSPORT_DATA, -1, RETRANSMIT_NORMAL, device_type);
     int total = transport_frames.size();
 
     if (!transport_frames.isEmpty()) {
@@ -263,6 +291,19 @@ bool ProtocolHandler::send_transport(const QByteArray& frame) {
     return true;
 }
 
+bool ProtocolHandler::send_transport_silent(const QByteArray& frame, int device_type) {
+    // 与 send_transport 相同的发送路径（切分 + 逐包发送），但【不 emit status_message】、
+    // 【不登记 m_sent_frames】（keepalive 每 50ms 重发，无需重传支持，避免 map 无限增长）：
+    // 供 50ms 周期的 0x0300 keepalive 使用，避免刷屏。
+    if (!m_ctrl->is_ready()) return false;
+
+    QVector<QByteArray> transport_frames = split_into_transport_frames(frame, MAX_TRANSPORT_DATA, -1, RETRANSMIT_NORMAL, device_type);
+    for (int i = 0; i < transport_frames.size(); i++) {
+        if (!m_ctrl->send_cmd(m_target_host, m_target_port, transport_frames[i])) return false;
+    }
+    return true;
+}
+
 QByteArray ProtocolHandler::build_command_frame(int cmd_code, int rw,
                                                 const QByteArray& data,
                                                 int sensor_id,
@@ -282,7 +323,7 @@ int ProtocolHandler::send_cmd(int cmd_code, int rw, const QByteArray& data,
     int msg_id = 0;
     QByteArray frame = build_command_frame(cmd_code, rw, data, sensor_id, &msg_id);
 
-    if (!send_transport(frame)) {
+    if (!send_transport(frame, device_type)) {
         if (error_callback) {
             try { error_callback(); } catch (...) {}
         }
@@ -388,7 +429,7 @@ void ProtocolHandler::read_encoder_interval(int sensor_id, std::function<void(co
 }
 
 void ProtocolHandler::read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    send_cmd(CMD_EXTERNAL_TRIGGER, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    send_cmd(CMD_EXTERNAL_TRIGGER_START, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
     emit status_message("Read external trigger...");
 }
 
@@ -451,19 +492,24 @@ void ProtocolHandler::set_batch_length(int count, int sensor_id, std::function<v
 }
 
 void ProtocolHandler::get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    send_cmd(CMD_GET_BATCH_DATA, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    send_cmd(CMD_GET_BATCH_DATA_REALTIME, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
     emit status_message(QString("Get batch data (Cam%1)").arg(sensor_id));
+}
+
+void ProtocolHandler::get_all_batch_data(int sensor_id, std::function<void(const ControlFrame&)> cb) {
+    send_cmd(CMD_GET_ALL_BATCH_DATA, RW_READ, QByteArray(2, '\x00'), sensor_id, cb);
+    emit status_message(QString("Get all batch data (Cam%1)").arg(sensor_id));
 }
 
 void ProtocolHandler::set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> cb) {
     QByteArray payload(2, '\x00');
     if (enabled) payload[1] = 0x01;
-    send_cmd(CMD_EXTERNAL_TRIGGER, RW_WRITE, payload, sensor_id, cb);
+    send_cmd(CMD_EXTERNAL_TRIGGER_START, RW_WRITE, payload, sensor_id, cb);
     emit status_message(QString("Set external trigger (Cam%1): %2").arg(sensor_id).arg(enabled ? "On" : "Off"));
 }
 
 void ProtocolHandler::set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    // 0x0204 写数据 4B：高 2B 开关(0x0001 启动 / 0x0000 停止)，低 2B 批次序号(置 0)
+    // 0x0203 写数据 4B：高 2B 开关(0x0001 启动 / 0x0000 停止)，低 2B 批次序号(置 0)
     QByteArray payload(4, '\x00');
     if (start) payload[1] = 0x01;
     send_cmd(CMD_BATCH_CONTROL, RW_WRITE, payload, sensor_id, cb);
@@ -476,7 +522,7 @@ void ProtocolHandler::reset_buffer(int sensor_id, std::function<void(const Contr
 }
 
 void ProtocolHandler::start_capture(int sensor_id, std::function<void(const ControlFrame&)> cb) {
-    // 采集/停止统一归入 0x0204 批处理控制（0x00010000 启动 / 0x00000000 停止）
+    // 采集/停止统一归入 0x0203 批处理控制（0x00010000 启动 / 0x00000000 停止）
     send_cmd(CMD_BATCH_CONTROL, RW_WRITE, QByteArray("\x00\x01\x00\x00", 4), sensor_id, cb);
     emit status_message("Start capture");
 }
@@ -484,6 +530,16 @@ void ProtocolHandler::start_capture(int sensor_id, std::function<void(const Cont
 void ProtocolHandler::stop_capture(int sensor_id, std::function<void(const ControlFrame&)> cb) {
     send_cmd(CMD_BATCH_CONTROL, RW_WRITE, QByteArray(4, '\x00'), sensor_id, cb);
     emit status_message("Stop capture");
+}
+
+void ProtocolHandler::request_camera_data(bool start, int sensor_id) {
+    // 0x0300 请求调试数据：写 2B payload，0x0001 启动 / 0x0000 停止。
+    // 对齐 Python 参考实现 protocol.get_camera_data(start, quiet=True)。
+    QByteArray payload(2, '\x00');
+    if (start) payload[1] = 0x01;
+    QByteArray frame = build_command_frame(CMD_GET_CAMERA_DATA, RW_WRITE, payload, sensor_id);
+    const int device_type = (sensor_id >= 0) ? sensor_id : m_sensor_id;
+    send_transport_silent(frame, device_type);
 }
 
 void ProtocolHandler::read_camera_version(int sensor_id, std::function<void(const ControlFrame&)> cb) {
@@ -553,7 +609,7 @@ void ProtocolHandler::send_remote_update_request(const QString& file_path,
 
     QByteArray frame = pack_remote_update_request(msg_id, file_size, file_crc);
 
-    if (!send_transport(frame)) {
+    if (!send_transport(frame, DEV_FPGA)) {
         if (error_cb) { try { error_cb(); } catch (...) {} }
         return;
     }
@@ -584,7 +640,7 @@ void ProtocolHandler::send_remote_update_control(bool start,
 
     QByteArray frame = pack_remote_update_control(msg_id, ctrl_cmd);
 
-    if (!send_transport(frame)) {
+    if (!send_transport(frame, DEV_FPGA)) {
         if (error_cb) { try { error_cb(); } catch (...) {} }
         return;
     }
@@ -612,7 +668,7 @@ void ProtocolHandler::send_remote_update_data(int chunk_index, const QByteArray&
     int msg_id = next_msg_id();
     QByteArray frame = pack_remote_update_data(msg_id, chunk_index, chunk_data);
 
-    if (!send_transport(frame)) {
+    if (!send_transport(frame, DEV_FPGA)) {
         if (error_cb) { try { error_cb(); } catch (...) {} }
         return;
     }
@@ -641,7 +697,7 @@ void ProtocolHandler::send_remote_update_result(std::function<void(const Control
     int msg_id = next_msg_id();
     QByteArray frame = pack_remote_update_result(msg_id);
 
-    if (!send_transport(frame)) {
+    if (!send_transport(frame, DEV_FPGA)) {
         if (error_cb) { try { error_cb(); } catch (...) {} }
         return;
     }
@@ -669,8 +725,12 @@ cv::Mat ProtocolHandler::get_latest_frame(int sensor_id) {
     return m_data->get_latest_frame(sensor_id);
 }
 
-std::deque<cv::Mat>& ProtocolHandler::get_sensor_frame_queue(int sensor_id) {
+std::deque<cv::Mat> ProtocolHandler::get_sensor_frame_queue(int sensor_id) {
     return m_data->get_sensor_queue(sensor_id);
+}
+
+uint64_t ProtocolHandler::get_frame_seq(int sensor_id) const {
+    return m_data->get_frame_seq(sensor_id);
 }
 
 int ProtocolHandler::last_pkt_id() const {
@@ -682,10 +742,19 @@ int ProtocolHandler::last_pkt_id() const {
 void ProtocolHandler::start_all() {
     m_ctrl_ready.store(false, std::memory_order_release);
     m_data_ready.store(false, std::memory_order_release);
-    m_ctrl->start();
+    m_ctrl_started = false;
+
+    // 非阻塞启动 (2026-08 优化): 不再在调用线程轮询等待子线程就绪 —— 否则 UI 线程
+    // 点击"连接"后会卡死最多 3s (数据线程 bind 失败时甚至卡满 3s), 按钮按下态无法
+    // 及时绘制, 表现为"点击连接很久才显示被点击"。
+    // 数据线程先启动 (同端口模式先 bind 者得单播); 控制线程由数据线程 sig_ready
+    // 回调启动, 保证先数据后控制。连接就绪/失败分别由 connected / connect_failed
+    // 信号通知 UI。需要阻塞等待时, 调用方显式使用 wait_all_ready()。
     m_data->start();
-    emit status_message(QString("Protocol handler started (ctrl:%1, data:%2)")
-        .arg(m_ctrl->port()).arg(m_data->port()));
+
+    emit status_message(QString("Protocol handler starting (ctrl:%1, data:%2)%3")
+        .arg(m_ctrl->port()).arg(m_data->port())
+        .arg(m_same_port_mode ? " [同端口模式]" : ""));
 }
 
 void ProtocolHandler::stop_all() {
@@ -722,6 +791,9 @@ void ProtocolHandler::set_network_params(const QString& target_host, int target_
 
     m_ctrl_ready.store(false, std::memory_order_release);
     m_data_ready.store(false, std::memory_order_release);
+
+    // 同端口模式判定: 本机控制端口 == FPGA 目标端口
+    m_same_port_mode = (local_port == m_target_port);
 
     m_ctrl = new UDPWorker("0.0.0.0", local_port, 4 * 1024 * 1024, this);
     m_data = new UDPDataThread("0.0.0.0", m_target_port, m_recv_buffer, 4, this);

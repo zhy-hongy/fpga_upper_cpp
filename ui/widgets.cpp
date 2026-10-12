@@ -66,55 +66,132 @@ void ImageView::set_image(const cv::Mat& arr) {
     bool size_changed = (arr.cols != m_image_w || arr.rows != m_image_h);
     m_image_w = arr.cols;
     m_image_h = arr.rows;
+    m_source_img = arr;   // 浅引用 (refcount)，避免 2.36MB memcpy
 
     if (!m_user_zoomed || size_changed) {
         m_center_x = m_image_w / 2.0;
         m_reference_y = m_image_h / 2.0;
     }
 
-    // Convert cv::Mat to QImage
-    QImage qimg;
-    if (arr.type() == CV_8UC1) {
-        qimg = QImage(arr.data, arr.cols, arr.rows, arr.cols, QImage::Format_Grayscale8);
-    } else if (arr.type() == CV_8UC3) {
-        cv::Mat rgb;
-        cv::cvtColor(arr, rgb, cv::COLOR_BGR2RGB);
-        qimg = QImage(rgb.data, rgb.cols, rgb.rows, rgb.cols * 3, QImage::Format_RGB888).copy();
-    } else {
-        cv::Mat gray;
-        if (arr.channels() == 3) {
-            cv::cvtColor(arr, gray, cv::COLOR_BGR2GRAY);
-        } else if (arr.channels() == 4) {
-            cv::cvtColor(arr, gray, cv::COLOR_BGRA2GRAY);
-        } else {
-            gray = arr.clone();
-        }
-        qimg = QImage(gray.data, gray.cols, gray.rows, gray.cols, QImage::Format_Grayscale8).copy();
-    }
-
-    m_pixmap = QPixmap::fromImage(qimg);
-
     if (!m_image_item) {
         m_image_item = new QGraphicsPixmapItem();
         m_image_item->setZValue(0);
         m_scene->addItem(m_image_item);
     }
-
-    m_image_item->setPixmap(m_pixmap);
     m_image_item->setVisible(m_show_image);
-    m_scene->setSceneRect(QRectF(0, 0, m_image_w, m_image_h));
 
+    // 场景矩形只在尺寸变化时更新 (QGraphicsScene::setSceneRect 相同矩形会 no-op，
+    // 显式跳过可省一次调用)。
+    if (size_changed)
+        m_scene->setSceneRect(QRectF(0, 0, m_image_w, m_image_h));
+
+    // fitInView 只在"需要适配"时执行：首次 / 图像尺寸变化 / 视口尺寸变化。
+    // 帧率路径下尺寸与视口都不变 → 跳过 fitInView，省去每帧变换重算。
+    QWidget* vp = viewport();
+    bool vp_changed = (vp->width() != m_last_fit_w || vp->height() != m_last_fit_h);
     if (!m_user_zoomed || size_changed) {
-        fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
-        m_zoom_factor = 1.0;
-        m_user_zoomed = false;
+        if (size_changed || vp_changed) {
+            fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+            m_last_fit_w = vp->width();
+            m_last_fit_h = vp->height();
+            m_zoom_factor = 1.0;
+            m_user_zoomed = false;
+        }
     }
+
+    // 新帧：强制按当前视图缩放重建显示 pixmap (图像隐藏时跳过重建，省 3ms/帧)
+    if (m_show_image)
+        render_display_pixmap(true);
 
     emit frame_changed(arr);
 }
 
+void ImageView::render_display_pixmap(bool force) {
+    if (m_source_img.empty() || !m_image_item) { m_disp_valid = false; return; }
+    const int srcW = m_source_img.cols, srcH = m_source_img.rows;
+    if (srcW <= 0 || srcH <= 0) { m_disp_valid = false; return; }
+
+    // 当前 scene→view 缩放 (DIP)。取两轴较大者以保留细节；zoom 时线性增到满分辨率。
+    qreal s = std::max(std::abs(transform().m11()), std::abs(transform().m22()));
+    if (s <= 0.0) s = 1.0;
+    qreal scale = s * devicePixelRatioF();
+    const qreal min_scale = 64.0 / double(std::max(srcW, srcH));
+    scale = CLAMP(scale, min_scale, 1.0);
+
+    int tw = std::max(1, int(std::lround(srcW * scale)));
+    int th = std::max(1, int(std::lround(srcH * scale)));
+
+    // 缩放/窗口变化时 (force=false)，尺寸未变则复用现有 pixmap
+    if (!force && tw == m_disp_w && th == m_disp_h && m_disp_valid && !m_pixmap.isNull())
+        return;
+
+    cv::Mat small;
+    if (m_source_img.type() == CV_8UC1) {
+        if (tw == srcW && th == srcH) {
+            small = m_source_img;
+        } else {
+            cv::resize(m_source_img, small, cv::Size(tw, th), 0, 0, cv::INTER_LINEAR);
+        }
+        QImage qimg(small.data, small.cols, small.rows, small.cols, QImage::Format_Grayscale8);
+        m_pixmap = QPixmap::fromImage(qimg);
+    } else if (m_source_img.type() == CV_8UC3) {
+        cv::Mat rgb;
+        if (tw == srcW && th == srcH) {
+            cv::cvtColor(m_source_img, rgb, cv::COLOR_BGR2RGB);
+        } else {
+            cv::Mat small3;
+            cv::resize(m_source_img, small3, cv::Size(tw, th), 0, 0, cv::INTER_LINEAR);
+            cv::cvtColor(small3, rgb, cv::COLOR_BGR2RGB);
+        }
+        QImage qimg(rgb.data, rgb.cols, rgb.rows, rgb.cols * 3, QImage::Format_RGB888);
+        m_pixmap = QPixmap::fromImage(qimg);
+    } else {
+        // 其它类型: 退回满分辨率转换
+        cv::Mat gray;
+        if (m_source_img.channels() == 3) {
+            cv::cvtColor(m_source_img, gray, cv::COLOR_BGR2GRAY);
+        } else if (m_source_img.channels() == 4) {
+            cv::cvtColor(m_source_img, gray, cv::COLOR_BGRA2GRAY);
+        } else {
+            gray = m_source_img.clone();
+        }
+        QImage qimg = QImage(gray.data, gray.cols, gray.rows, gray.cols, QImage::Format_Grayscale8).copy();
+        m_pixmap = QPixmap::fromImage(qimg);
+    }
+
+    // 让 pixmap 的逻辑尺寸保持 srcW×srcH (场景坐标/测量不变)，物理尺寸≈显示尺寸 →
+    // 绘制近似 1:1 blit，SmoothPixmapTransform 的缩放开销降到最低。
+    qreal dpr_set = qreal(m_pixmap.width()) / srcW;
+    m_pixmap.setDevicePixelRatio(dpr_set);
+    m_image_item->setPixmap(m_pixmap);
+    m_disp_w = tw;
+    m_disp_h = th;
+    m_disp_valid = true;
+}
+
+QPixmap ImageView::pixmap() const {
+    // 保存图像需要满分辨率，而非显示用的小 pixmap
+    if (!m_source_img.empty() && m_source_img.type() == CV_8UC1) {
+        QImage qimg(m_source_img.data, m_source_img.cols, m_source_img.rows,
+                    m_source_img.cols, QImage::Format_Grayscale8);
+        return QPixmap::fromImage(qimg);
+    }
+    if (!m_source_img.empty() && m_source_img.type() == CV_8UC3) {
+        cv::Mat rgb;
+        cv::cvtColor(m_source_img, rgb, cv::COLOR_BGR2RGB);
+        QImage qimg = QImage(rgb.data, rgb.cols, rgb.rows, rgb.cols * 3, QImage::Format_RGB888).copy();
+        return QPixmap::fromImage(qimg);
+    }
+    return m_pixmap;
+}
+
 void ImageView::clear_image() {
     m_pixmap = QPixmap();
+    m_source_img = cv::Mat();
+    m_disp_valid = false;
+    m_disp_w = 0; m_disp_h = 0;
+    m_image_w = 0; m_image_h = 0;
+    m_last_fit_w = 0; m_last_fit_h = 0;
     if (m_image_item) {
         m_image_item->setPixmap(QPixmap());
         m_image_item->setVisible(false);
@@ -134,6 +211,7 @@ void ImageView::set_camera_frame(const CameraFrame& frame) {
 }
 
 void ImageView::set_camera_label(const QString& label) {
+    if (m_camera_label == label) return;   // 避免每帧触发多余重绘
     m_camera_label = label;
     viewport()->update();
 }
@@ -150,7 +228,10 @@ void ImageView::set_show_image(bool enabled) {
         if (!m_user_zoomed) {
             fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
             m_zoom_factor = 1.0;
+            m_last_fit_w = viewport()->width();
+            m_last_fit_h = viewport()->height();
         }
+        render_display_pixmap(true);
     }
     update_centerline_visibility();
 }
@@ -383,6 +464,7 @@ void ImageView::zoom_row_in() {
     m_user_zoomed = true;
     if (!(m_show_contour && !m_contour_points.isEmpty() && !m_show_image))
         apply_image_zoom(1.0, 1.15);
+    render_display_pixmap();
     viewport()->update();
 }
 
@@ -391,6 +473,7 @@ void ImageView::zoom_row_out() {
     m_user_zoomed = true;
     if (!(m_show_contour && !m_contour_points.isEmpty() && !m_show_image))
         apply_image_zoom(1.0, 1.0 / 1.15);
+    render_display_pixmap();
     viewport()->update();
 }
 
@@ -399,6 +482,7 @@ void ImageView::zoom_col_in() {
     m_user_zoomed = true;
     if (!(m_show_contour && !m_contour_points.isEmpty() && !m_show_image))
         apply_image_zoom(1.15, 1.0);
+    render_display_pixmap();
     viewport()->update();
 }
 
@@ -407,6 +491,7 @@ void ImageView::zoom_col_out() {
     m_user_zoomed = true;
     if (!(m_show_contour && !m_contour_points.isEmpty() && !m_show_image))
         apply_image_zoom(1.0 / 1.15, 1.0);
+    render_display_pixmap();
     viewport()->update();
 }
 
@@ -419,6 +504,9 @@ void ImageView::reset_zoom() {
     m_contour_zoom = 1.0;
     m_contour_pan_x = 0.0;
     m_contour_pan_z = 0.0;
+    m_last_fit_w = viewport()->width();
+    m_last_fit_h = viewport()->height();
+    render_display_pixmap();
     viewport()->update();
 }
 
@@ -528,6 +616,7 @@ void ImageView::wheelEvent(QWheelEvent* event) {
             if (m_contour_zoom != old_z) apply_contour_zoom_wheel(mx, my, old_z, m_contour_zoom, "both");
         }
         event->accept();
+        render_display_pixmap();
         viewport()->update();
         return;
     }
@@ -719,7 +808,10 @@ void ImageView::resizeEvent(QResizeEvent* event) {
     if (!m_pixmap.isNull() && !m_user_zoomed) {
         fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
         m_zoom_factor = 1.0;
+        m_last_fit_w = viewport()->width();
+        m_last_fit_h = viewport()->height();
     }
+    render_display_pixmap();
 }
 
 void ImageView::scrollContentsBy(int dx, int dy) {

@@ -48,7 +48,8 @@ public:
 
     // Frame queue access
     cv::Mat get_latest_frame(int sensor_id = -1);
-    std::deque<cv::Mat>& get_sensor_frame_queue(int sensor_id);
+    std::deque<cv::Mat> get_sensor_frame_queue(int sensor_id);
+    uint64_t get_frame_seq(int sensor_id) const;
     int last_pkt_id() const;
 
     // High-level API - Camera controls
@@ -71,12 +72,19 @@ public:
     virtual void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+    virtual void get_all_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
     virtual void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr);
+
+    // 0x0300 请求调试数据（持续上传 keepalive）：FPGA 收到 0x0001 后开始流式上传
+    // (图像+中心线+3D+插值)，需以 ~50ms 心跳周期性重发维持。fire-and-forget：无回调、
+    // 不登记 pending、不打印状态日志（GUI 20Hz keepalive 不能刷屏）。
+    // sensor_id=-1 时使用默认 sensor (构造时的 DEV_SENSOR1)；调用方需显式传 1~4。
+    virtual void request_camera_data(bool start, int sensor_id = -1);
 
     // ---- 设备信息读取（对齐 通讯协议.md：0x0007/0x0501/0x0502/0x0503）----
     // 相机固件版本走 sensor(1~4)；FPGA 固件版本 / 设备序列号 / 网络参数走 Dev=FPGA(0x0000)。
@@ -118,6 +126,7 @@ public:
 signals:
     void connected();
     void disconnected();
+    void connect_failed(const QString& reason);   // socket bind 失败/未就绪 (2026-08)
     void control_response(const ControlFrame& frame);
     void frame_ready(const FramePacket& frame);
     void data_frame_info(int fps, int total, int dropped);
@@ -132,7 +141,8 @@ private slots:
 
 private:
     int next_msg_id();
-    bool send_transport(const QByteArray& frame);
+    bool send_transport(const QByteArray& frame, int device_type = 0);
+    bool send_transport_silent(const QByteArray& frame, int device_type = 0);  // 同 send_transport 但不 emit status_message
     int send_cmd(int cmd_code, int rw, const QByteArray& data = QByteArray(),
                  int sensor_id = -1,
                  std::function<void(const ControlFrame&)> callback = nullptr,
@@ -144,7 +154,7 @@ private:
     int m_sensor_id;
     QString m_target_host;
     int m_target_port;
-    int m_recv_buffer = 16 * 1024 * 1024;
+    int m_recv_buffer = 128 * 1024 * 1024; // 128MB, 对齐 config.recv_buffer_size 默认值
 
     QMap<int, PendingRequest> m_pending;
     QMap<int, QVector<QByteArray>> m_sent_frames;
@@ -154,6 +164,8 @@ private:
     QTimer* m_timeout_timer = nullptr;
     std::mt19937 m_rng;
     bool m_is_destroying = false;
+    bool m_same_port_mode = false;  // control_port == data_port 时启用同端口模式
+    bool m_ctrl_started = false;    // start_all() 后控制线程是否已启动 (数据线程就绪后启动)
 
     // 子线程就绪标志（由 sig_ready 信号驱动，wait_all_ready 消费）
     std::atomic<bool> m_ctrl_ready{false};

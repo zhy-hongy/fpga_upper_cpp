@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 project(FPGAUpper VERSION 1.0.0 LANGUAGES CXX)
+if(MSVC AND DEFINED ENV{FPGA_MSVC_INCLUDE_PREFIX})
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "$ENV{FPGA_MSVC_INCLUDE_PREFIX}")
+endif()
+
+# Current protocol SDK and its standalone Qt demo are the default build.
+# The previous application remains available without overwriting local work.
+option(FPGA_BUILD_LEGACY_APP "Build the previous Qt/OpenCV application" OFF)
+include(CTest)
+add_subdirectory(sdk_v2)
+if(NOT FPGA_BUILD_LEGACY_APP)
+    return()
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

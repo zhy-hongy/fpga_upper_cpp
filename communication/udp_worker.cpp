@@ -15,7 +15,14 @@ void UDPWorker::run() {
     m_running = true;
     m_sock = new QUdpSocket();
 
-    if (!m_sock->bind(QHostAddress(m_host), m_port)) {
+    // ReuseAddressHint (Windows 上等价 SO_REUSEADDR, 见 Qt6 qabstractsocket.cpp Q_OS_WIN 分支):
+    // 同端口模式 (control_port == data_port) 下, 数据 socket 与【本】控制 socket 都必须
+    // 持有 SO_REUSEADDR —— 对齐 Python 参考实现 backend/udp_worker.py (同样
+    // setsockopt(SO_REUSEADDR, 1) 后再 bind)。两个 socket 都持有 SO_REUSEADDR 才能同时
+    // bind 同一端口。Windows 对 SO_REUSEADDR 同名端口把 UDP 单播投递给【先 bind】的
+    // socket, 因此本控制 socket 是"影子"发送端 (只发不收), 数据 socket 负责收全部单播。
+    // 注意: ShareAddress 在 Windows 不设 SO_REUSEADDR, 不能用在这里。
+    if (!m_sock->bind(QHostAddress(m_host), m_port, QAbstractSocket::ReuseAddressHint)) {
         emit sig_error("UDP bind failed: " + m_sock->errorString());
         m_sock->deleteLater();
         m_sock = nullptr;
@@ -32,7 +39,8 @@ void UDPWorker::run() {
 
     while (m_running) {
         flush_pending_sends();
-        if (m_sock->waitForReadyRead(100)) {
+        if (m_sock->waitForReadyRead(10))
+        {
             while (m_sock->hasPendingDatagrams()) {
                 QByteArray data;
                 data.resize(static_cast<int>(m_sock->pendingDatagramSize()));
@@ -51,11 +59,14 @@ void UDPWorker::run() {
                 if (data.size() >= 2 &&
                     static_cast<uint8_t>(data[0]) == 0xAB &&
                     static_cast<uint8_t>(data[1]) == 0xAB) {
-                    if (data.size() >= 12) {
-                        uint32_t retransmit = (static_cast<uint8_t>(data[8]) << 24) |
-                                              (static_cast<uint8_t>(data[9]) << 16) |
-                                              (static_cast<uint8_t>(data[10]) << 8) |
-                                              static_cast<uint8_t>(data[11]);
+                    // 新协议传输层字段: 帧头(2)+设备类型(2)+帧ID(2)+总包数(2)+
+                    // 当前包(2)+重传说明(4, 偏移 10)+空(4)+数据长度(2)+...
+                    // 重传说明字段读取 data[10..13]。
+                    if (data.size() >= 14) {
+                        uint32_t retransmit = (static_cast<uint8_t>(data[10]) << 24) |
+                                              (static_cast<uint8_t>(data[11]) << 16) |
+                                              (static_cast<uint8_t>(data[12]) << 8) |
+                                              static_cast<uint8_t>(data[13]);
                         if (static_cast<int>(retransmit) == RETRANSMIT_REQUEST) {
                             emit sig_retransmit_request(data);
                             continue;
@@ -105,8 +116,17 @@ void UDPWorker::flush_pending_sends() {
     }
     while (!to_send.isEmpty()) {
         PendingDatagram d = to_send.dequeue();
-        if (m_sock)
-            m_sock->writeDatagram(d.data, QHostAddress(d.ip), d.port);
+        if (!m_sock) continue;
+        qint64 n = m_sock->writeDatagram(d.data, QHostAddress(d.ip), d.port);
+        if (n < 0) {
+            // 节流上报发送失败 (≥2s 一条), 便于定位命令发不出去的问题
+            qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (now - m_last_send_err_ms > 2000) {
+                m_last_send_err_ms = now;
+                emit sig_error(QString("Ctrl send failed (%1B → %2:%3): %4")
+                    .arg(d.data.size()).arg(d.ip).arg(d.port).arg(m_sock->errorString()));
+            }
+        }
     }
 }
 

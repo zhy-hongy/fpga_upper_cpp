@@ -32,7 +32,7 @@ public:
 
     void set_image(const cv::Mat& arr);
     void clear_image();
-    QPixmap pixmap() const { return m_pixmap; }
+    QPixmap pixmap() const;
 
     void set_camera_frame(const CameraFrame& frame);
     void set_camera_label(const QString& label);
@@ -105,6 +105,9 @@ private:
     void apply_image_zoom(double sx, double sy);
     void apply_contour_zoom_wheel(double mx, double my, double old_zoom, double new_zoom, const QString& axis);
     void update_centerline_visibility();
+    // 按当前视图缩放把 m_source_img 缩到"恰好显示所需"的尺寸生成显示用 pixmap
+    // (force=true 表示新帧到达必须重建；force=false 供缩放/窗口变化时按需重建)。
+    void render_display_pixmap(bool force = false);
 
     static QString fmt_mm(double val, double step = -1);
     int get_3d_total_lines() const;
@@ -142,6 +145,16 @@ private:
     bool m_show_3d = false;
     int m_image_w = 1280;
     int m_image_h = 1024;
+
+    // 显示路径优化: 保留源图浅引用 + 当前显示 pixmap 的物理尺寸，
+    // 以便按视图缩放重建小尺寸 pixmap (大幅降低每帧大块内存分配/缩放开销)。
+    cv::Mat m_source_img;
+    int m_disp_w = 0;
+    int m_disp_h = 0;
+    bool m_disp_valid = false;
+    // 上次 fitInView 时的视口尺寸，用于在帧率路径跳过不必要的 fitInView
+    int m_last_fit_w = 0;
+    int m_last_fit_h = 0;
 
     // Contour data
     QVector<QPair<float, float>> m_contour_points;

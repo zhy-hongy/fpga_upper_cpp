@@ -1,13 +1,30 @@
 #include "data_dispatcher.h"
 
+#include <QDebug>
+
 #include <cstring>
 
 #include <QMutexLocker>
 
+static constexpr int MAX_DISPATCHER_QUEUE = 4; // 只保留最新 4 帧, 对标 m_frame_queues
+
 void DataDispatcher::enqueue(const FramePacket& frame) {
     QMutexLocker lock(&m_mutex);
+
     m_queue.append(frame);
-    m_latest.insert(frame.sensorId, frame);   // 只更新最新帧缓存，不改写来源字段
+    if (m_queue.size() > MAX_DISPATCHER_QUEUE)
+        m_queue.pop_front(); // 丢弃最旧帧, 防止无界积压
+
+    m_latest.insert(frame.sensorId, frame); // 只更新最新帧缓存，不改写来源字段
+
+    // 诊断日志: 每 30 帧打印一次队列深度, 验证是否持续积压
+    static int counter = 0;
+    if ((++counter % 30) == 0)
+    {
+        qDebug() << "[DataDispatcher] queue depth =" << m_queue.size()
+                 << "counter =" << counter;
+    }
+
     m_cv.wakeAll();
 }
 

@@ -392,7 +392,11 @@ MainWindow::MainWindow(const Config& config, QWidget* parent)
 
     m_display_timer = new QTimer(this);
     connect(m_display_timer, &QTimer::timeout, this, &MainWindow::poll_frame);
-    m_display_timer->start(10);
+    m_display_timer->start(20);
+
+    // 0x0300 请求调试数据 keepalive：仅当已连接 + (图像|轮廓) 模式时启动。
+    m_upload_timer = new QTimer(this);
+    connect(m_upload_timer, &QTimer::timeout, this, &MainWindow::on_upload_keepalive);
 }
 
 MainWindow::~MainWindow() {
@@ -400,6 +404,10 @@ MainWindow::~MainWindow() {
     if (m_display_timer) {
         m_display_timer->stop();
         disconnect(m_display_timer, nullptr, this, nullptr);
+    }
+    if (m_upload_timer) {
+        m_upload_timer->stop();
+        disconnect(m_upload_timer, nullptr, this, nullptr);
     }
 
     // Disconnect all signals from protocol handler to prevent callbacks during destruction
@@ -1191,6 +1199,7 @@ void MainWindow::connect_signals() {
     if (m_protocol) {
         connect(m_protocol, &ProtocolHandler::connected, this, &MainWindow::on_connected);
         connect(m_protocol, &ProtocolHandler::disconnected, this, &MainWindow::on_disconnected);
+        connect(m_protocol, &ProtocolHandler::connect_failed, this, &MainWindow::on_connect_failed);
         connect(m_protocol, &ProtocolHandler::control_response, this, &MainWindow::on_control_response);
         connect(m_protocol, &ProtocolHandler::data_frame_info, this, &MainWindow::on_frame_info);
         connect(m_protocol, &ProtocolHandler::data_resolution, this, &MainWindow::on_resolution_changed);
@@ -1312,10 +1321,17 @@ void MainWindow::connect_signals() {
 
 void MainWindow::poll_frame() {
     bool any_new = false;
+    bool updated[5] = {false, false, false, false, false};
     for (int sid = 1; sid <= 4; sid++) {
-        cv::Mat img = m_protocol->get_latest_frame(sid);
-        if (!img.empty()) {
+        uint64_t seq = m_protocol->get_frame_seq(sid);
+        if (seq != 0 && seq != m_last_rendered_seq[sid]) {
+            // 仅在新帧到来时更新缓存与渲染 (每帧只渲染一次)，避免 100Hz 轮询
+            // 对同一帧反复 QPixmap::fromImage(2.36MB) 把 GUI 线程拖死。
+            cv::Mat img = m_protocol->get_latest_frame(sid);
+            if (img.empty()) continue;
             m_camera_frames[sid].set_image(img);
+            m_last_rendered_seq[sid] = seq;
+            updated[sid] = true;
             if (!any_new && !m_image_logged) {
                 log(QString("← 收到图像 Sensor%1: %2×%3")
                     .arg(sid).arg(img.cols).arg(img.rows));
@@ -1326,30 +1342,33 @@ void MainWindow::poll_frame() {
     }
     if (!any_new) return;
 
-    // Distribute to views
+    // Distribute to views —— 只重渲染"本帧确实有新帧"的视图，避免多视图布局下
+    // 因某个传感器更新而反复重画其余传感器的旧帧。
     if (m_current_layout == 1) {
-        if (m_selected_camera == 0) {
+        int show = m_selected_camera;
+        if (show == 0) {   // auto: 显示编号最小的、已有图像的传感器
+            show = -1;
             for (int sid = 1; sid <= 4; sid++) {
-                auto& frame = m_camera_frames[sid];
-                if (frame.has_image) {
-                    m_image_views[0]->set_camera_frame(frame);
-                    m_image_views[0]->set_camera_label(QString("Cam%1").arg(sid));
-                    break;
-                }
+                if (m_camera_frames[sid].has_image) { show = sid; break; }
             }
-        } else {
-            m_image_views[0]->set_camera_frame(m_camera_frames[m_selected_camera]);
-            m_image_views[0]->set_camera_label(QString("Cam%1").arg(m_selected_camera));
+        }
+        if (show >= 1 && show <= 4 && updated[show]) {
+            m_image_views[0]->set_camera_frame(m_camera_frames[show]);
+            m_image_views[0]->set_camera_label(QString("Cam%1").arg(show));
         }
     } else if (m_current_layout == 2) {
         for (int i = 0; i < 2; i++) {
-            m_image_views[i]->set_camera_frame(m_camera_frames[i + 1]);
-            m_image_views[i]->set_camera_label(QString("Cam%1").arg(i + 1));
+            if (updated[i + 1]) {
+                m_image_views[i]->set_camera_frame(m_camera_frames[i + 1]);
+                m_image_views[i]->set_camera_label(QString("Cam%1").arg(i + 1));
+            }
         }
     } else {
         for (int i = 0; i < 4; i++) {
-            m_image_views[i]->set_camera_frame(m_camera_frames[i + 1]);
-            m_image_views[i]->set_camera_label(QString("Cam%1").arg(i + 1));
+            if (updated[i + 1]) {
+                m_image_views[i]->set_camera_frame(m_camera_frames[i + 1]);
+                m_image_views[i]->set_camera_label(QString("Cam%1").arg(i + 1));
+            }
         }
     }
 
@@ -1443,6 +1462,43 @@ void MainWindow::apply_display_mode() {
         for (auto* view : m_image_views)
             view->set_measure_mode({});
     }
+
+    // 图像/轮廓模式需要 FPGA 持续上传 → 启停 0x0300 keepalive
+    update_upload_timer();
+}
+
+// ══════════════════════════════════════════════════
+// 0x0300 请求调试数据 keepalive
+// ══════════════════════════════════════════════════
+// FPGA 仅在收到 0x0300(payload=0x0001) 后持续上传 图像/中心线/3D/插值，
+// 且需要主机以 ~50ms 心跳周期性重发维持（对齐 Python 参考实现 camera.py
+// 的 _upload_timer 每 50ms 发送 get_camera_data(start=True, quiet=True)）。
+// 图像/轮廓模式 → 启动 keepalive；3D 模式 → 停止（Python 同样在 3D 时 stop_upload）。
+
+void MainWindow::update_upload_timer() {
+    if (!m_protocol || !m_upload_timer) return;
+    if (!m_connected) { m_upload_timer->stop(); return; }
+
+    const bool need_upload =
+        m_btn_show_image->isChecked() || m_btn_show_contour->isChecked();
+
+    if (need_upload) {
+        if (!m_upload_timer->isActive()) {
+            m_upload_timer->start(50);          // 20Hz keepalive
+            on_upload_keepalive();              // 立即发一次，避免等 50ms 才启动上传
+        }
+    } else if (m_upload_timer->isActive()) {
+        m_upload_timer->stop();
+        // 通知 FPGA 停止上传（0x0000）。仅发一次，不循环。
+        for (int sid : target_sensor_ids())
+            m_protocol->request_camera_data(false, sid);
+    }
+}
+
+void MainWindow::on_upload_keepalive() {
+    if (!m_protocol || !m_connected) return;
+    for (int sid : target_sensor_ids())
+        m_protocol->request_camera_data(true, sid);
 }
 
 // ══════════════════════════════════════════════════
@@ -1527,10 +1583,14 @@ void MainWindow::on_net_connect() {
     m_btn_connect->setEnabled(false);
     m_btn_disconnect->setEnabled(true);
     log(QString("连接 FPGA: %1:%2 (本机端口:%3)").arg(fpga_ip).arg(port_fpga).arg(port_local));
+    if (port_local == port_fpga)
+        log("同端口模式: 本机端口 == FPGA 端口, 数据通道优先 bind, 控制应答经数据通道路由");
 }
 
 void MainWindow::on_net_disconnect() {
     m_protocol->stop_all();
+    m_connected = false;
+    if (m_upload_timer) m_upload_timer->stop();
     m_btn_connect->setEnabled(true);
     m_btn_disconnect->setEnabled(false);
     m_image_logged = false;
@@ -1547,6 +1607,10 @@ void MainWindow::on_connected() {
     if (!m_status_widget) return;
     m_status_widget->set_ip(QString("%1:%2").arg(m_edit_fpga->text()).arg(m_spin_fpga_port->value()));
     log("FPGA 已连接");
+    m_connected = true;
+
+    // 连接就绪 → 若当前是图像/轮廓模式则启动 0x0300 keepalive（FPGA 开始上传数据）
+    update_upload_timer();
 
     // Read FW version after connect（0x0502，4 字节 "A.B.C.D"）
     if (!m_protocol) return;
@@ -1597,6 +1661,8 @@ void MainWindow::on_connected() {
 
 void MainWindow::on_disconnected() {
     m_status_widget->set_ip("---");
+    m_connected = false;
+    if (m_upload_timer) m_upload_timer->stop();
     log("FPGA 已断开");
 }
 
@@ -1620,6 +1686,15 @@ void MainWindow::on_resolution_changed(int sensor_id, int w, int h) {
 
 void MainWindow::on_status_message(const QString& msg) { log(msg); }
 void MainWindow::on_error_occurred(const QString& msg) { log_error(msg); }
+
+void MainWindow::on_connect_failed(const QString& reason) {
+    // socket bind 失败/未就绪 → 复位连接按钮, 允许用户重试。
+    log_error(QString("连接失败: %1").arg(reason));
+    m_connected = false;
+    if (m_upload_timer) m_upload_timer->stop();
+    if (m_btn_connect) m_btn_connect->setEnabled(true);
+    if (m_btn_disconnect) m_btn_disconnect->setEnabled(false);
+}
 
 // ══════════════════════════════════════════════════
 // Camera control handlers
@@ -2189,6 +2264,7 @@ void MainWindow::log_error(const QString& msg) {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     m_display_timer->stop();
+    if (m_upload_timer) m_upload_timer->stop();
     if (m_sdk_test && m_sdk_test->isRunning()) m_sdk_test->request_stop();
     m_protocol->stop_all();
     event->accept();

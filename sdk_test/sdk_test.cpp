@@ -259,7 +259,7 @@ void SDKTest::run() {
         verify_sent_cmds("Cam_GetTriggerConfig",
                          {rd(CMD_TRIGGER_MODE), rd(CMD_ENCODER_TYPE),
                           rd(CMD_ENCODER_MODE), rd(CMD_ENCODER_INTERVAL),
-                          rd(CMD_EXTERNAL_TRIGGER)});
+                          rd(CMD_EXTERNAL_TRIGGER_START)});
     }
     BatchConfig bc{};
     e = api("Cam_GetBatchConfig", [&] { return Cam_GetBatchConfig(handle, 1, &bc); });
@@ -295,7 +295,7 @@ void SDKTest::run() {
                           wr(CMD_ENCODER_TYPE, be16v(1)),
                           wr(CMD_ENCODER_MODE, be16v(1)),
                           wr(CMD_ENCODER_INTERVAL, be32v(100)),
-                          wr(CMD_EXTERNAL_TRIGGER, QByteArray(2, '\0'))});
+                          wr(CMD_EXTERNAL_TRIGGER_START, QByteArray(2, '\0'))});
     }
     BatchConfig setBc{};
     setBc.length = 200;

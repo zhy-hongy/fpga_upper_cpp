@@ -1,5 +1,6 @@
 #include "transport_frame.h"
 #include "crc16.h"
+#include <algorithm>
 #include <random>
 #include <stdexcept>
 #include <chrono>
@@ -18,7 +19,7 @@ static int next_packet_id() {
 
 QByteArray pack_transport_frame(const QByteArray& data, int packet_id,
                                  int total_packets, int current_packet,
-                                 int retransmit) {
+                                 int retransmit, int device_type) {
     QByteArray body;
     auto append16 = [&](uint16_t v) {
         body.append(static_cast<char>((v >> 8) & 0xFF));
@@ -30,6 +31,7 @@ QByteArray pack_transport_frame(const QByteArray& data, int packet_id,
         body.append(static_cast<char>((v >> 8) & 0xFF));
         body.append(static_cast<char>(v & 0xFF));
     };
+    append16(static_cast<uint16_t>(device_type));
     append16(static_cast<uint16_t>(packet_id));
     append16(static_cast<uint16_t>(total_packets));
     append16(static_cast<uint16_t>(current_packet));
@@ -53,13 +55,14 @@ QByteArray pack_transport_frame(const QByteArray& data, int packet_id,
     return frame;
 }
 
-QByteArray pack_retransmit_request(int frame_id, const QVector<int>& missing_packets) {
+QByteArray pack_retransmit_request(int frame_id, const QVector<int>& missing_packets,
+                                   int device_type) {
     QByteArray data;
     for (int p : missing_packets) {
         data.append(static_cast<char>((p >> 8) & 0xFF));
         data.append(static_cast<char>(p & 0xFF));
     }
-    return pack_transport_frame(data, frame_id, 0, 0, RETRANSMIT_REQUEST);
+    return pack_transport_frame(data, frame_id, 0, 0, RETRANSMIT_REQUEST, device_type);
 }
 
 TransportFrame unpack_transport_frame(const QByteArray& frame) {
@@ -88,37 +91,41 @@ TransportFrame unpack_transport_frame(const QByteArray& frame) {
         throw std::runtime_error("Transport frame tail error");
     }
 
-    // CRC check：CRC-16/MODBUS 覆盖帧头之后、CRC 字段之前全部数据。
-    uint16_t crc_received = read16(frame.size() - 4);
-    uint16_t crc_computed = crc16_modbus(frame.mid(2, frame.size() - 6));
-    if (crc_received != crc_computed) {
-        throw std::runtime_error("Transport frame CRC error");
-    }
+    // CRC 接收校验【已关闭】(对齐 Python 参考实现的宽松接收端):
+    // Python 测试工具 send_sine.py 默认 compute_crc=False, CRC 字段写 0x0000,
+    // 纯 Python 逐帧算 CRC 会把发送速率压到 ~3 FPS, 无法测出本机最大接收速率。
+    // 因此这里不再校验/丢弃 CRC 不匹配的帧 (发送端 pack_transport_frame 仍会正确填 CRC)。
+    // 如需恢复严格校验, 取消下面三行注释即可。
+    // uint16_t crc_received = read16(frame.size() - 4);
+    // uint16_t crc_computed = crc16_modbus(frame.mid(2, frame.size() - 6));
+    // if (crc_received != crc_computed) { throw std::runtime_error("Transport frame CRC error"); }
 
     TransportFrame tf;
-    tf.packet_id = read16(2);
-    tf.total_packets = read16(4);
-    tf.current_packet = read16(6);
-    tf.retransmit = static_cast<int>(read32(8));
-    tf.data_len = read16(16);
-    if (18 + tf.data_len > frame.size() - 2) {
+    tf.device_type = read16(2);
+    tf.packet_id = read16(4);
+    tf.total_packets = read16(6);
+    tf.current_packet = read16(8);
+    tf.retransmit = static_cast<int>(read32(10));
+    tf.data_len = read16(18);
+    if (20 + tf.data_len > frame.size() - 2) {
         throw std::runtime_error("Transport frame data length error");
     }
-    tf.data = frame.mid(18, tf.data_len);
+    tf.data = frame.mid(20, tf.data_len);
     return tf;
 }
 
 QVector<QByteArray> split_into_transport_frames(const QByteArray& data,
                                                   int max_data_per_packet,
                                                   int packet_id,
-                                                  int retransmit) {
+                                                  int retransmit,
+                                                  int device_type) {
     QVector<QByteArray> frames;
     int data_len = data.size();
 
     if (packet_id < 0) packet_id = next_packet_id();
 
     if (data_len <= max_data_per_packet) {
-        frames.append(pack_transport_frame(data, packet_id, 1, 1, retransmit));
+        frames.append(pack_transport_frame(data, packet_id, 1, 1, retransmit, device_type));
         return frames;
     }
 
@@ -127,7 +134,7 @@ QVector<QByteArray> split_into_transport_frames(const QByteArray& data,
         int start = i * max_data_per_packet;
         int end = qMin(start + max_data_per_packet, data_len);
         QByteArray chunk = data.mid(start, end - start);
-        frames.append(pack_transport_frame(chunk, packet_id, total, i + 1, retransmit));
+        frames.append(pack_transport_frame(chunk, packet_id, total, i + 1, retransmit, device_type));
     }
     return frames;
 }
@@ -154,19 +161,44 @@ TransportAssembler::FeedResult TransportAssembler::feed(const QByteArray& raw) {
     int total = info.total_packets;
     int current = info.current_packet;
 
-    if (total == 1) {
-        result.assembled_data = info.data;
+    if (total <= 1)
+    {
+        result.assembled_data = std::move(info.data);
         return result;
     }
 
     double now = steady_now();
 
     if (current == 1) {
+        m_stats.frame_start++; // 帧级统计: 收到首包
+
+        // 每 8 个新帧首包清理一次过期流: 对标 Python check_transport_timeout(),
+        // 使用 first_time (流创建时间) 而非 last_time (最后收包时间) 做硬超时,
+        // 防止丢包导致的残缺流因持续收到其他分片而永远无法被清理 → 恶性循环。
+        // 之前只在 m_streams.size() > MAX_TRANSPORT_STREAMS/2 时清理,
+        // 但对持续丢包场景, last_time 始终刷新, 清理永远不触发。
+        static int new_stream_count = 0;
+        if ((++new_stream_count % 8) == 0)
+        {
+            QVector<int> stale;
+            for (auto it = m_streams.begin(); it != m_streams.end(); ++it)
+            {
+                if (now - it->first_time > m_timeout)
+                    stale.append(it.key());
+            }
+            m_stats.frame_timeout += stale.size(); // 帧级统计: 超时清理数
+            for (int key : stale)
+                m_streams.remove(key);
+        }
+
         StreamState state;
         state.total_packets = total;
-        state.chunks[1] = info.data;
+        state.chunks.resize(total);             // 预分配 vector, 对标 Python [None]*N
+        state.chunks[0] = std::move(info.data); // current==1 → index 0
+        state.received_count = 1;
         state.last_time = now;
-        m_streams[pid] = state;
+        state.first_time = now; // 流创建时间
+        m_streams[pid] = std::move(state);
         return result;
     }
 
@@ -183,70 +215,52 @@ TransportAssembler::FeedResult TransportAssembler::feed(const QByteArray& raw) {
         return result;
     }
 
-    it->chunks[current] = info.data;
+    int idx = current - 1;
+    if (idx < 0 || idx >= it->chunks.size())
+        return result;
+
+    if (it->chunks[idx].isNull())
+        it->received_count++;
+    it->chunks[idx] = std::move(info.data); // 重复包覆盖 (last-write-wins)
     it->last_time = now;
 
-    if (it->chunks.size() >= static_cast<unsigned>(it->total_packets)) {
+    if (it->received_count >= it->total_packets)
+    {
+        // 全部不同分片已收齐: 预分配 vector 中无空位, 直接拼接。
+        // 对标 Python b''.join(state.chunks)。
+        m_stats.frame_complete++; // 帧级统计: 成功完成
+        int total_size = 0;
+        for (int i = 0; i < it->total_packets; i++)
+            total_size += it->chunks[i].size();
         QByteArray assembled;
-        for (int i = 1; i <= it->total_packets; i++) {
-            auto cit = it->chunks.find(i);
-            if (cit == it->chunks.end()) {
-                m_streams.erase(it);
-                return result;
-            }
-            assembled.append(cit.value());
-        }
+        assembled.reserve(total_size);
+        for (int i = 0; i < it->total_packets; i++)
+            assembled.append(it->chunks[i]);
         m_streams.erase(it);
-        result.assembled_data = assembled;
+        result.assembled_data = std::move(assembled);
     }
 
     return result;
 }
 
 TransportAssembler::RetransmitResult TransportAssembler::check_retransmit() {
+    // 对标 Python: 下位机暂不支持重传, 此方法仅做超时清理, 不发送重传请求。
+    // 重传请求会消耗 FPGA 侧资源且无效, 反而可能造成网络拥塞。
+    // 使用 first_time 而非 last_time 做硬超时: 防止丢包残缺流因持续收到
+    // 其他分片刷新 last_time 而永远不被清理。
     RetransmitResult result;
     double now = steady_now();
 
     for (auto it = m_streams.begin(); it != m_streams.end(); ) {
-        if (now - it->last_time > m_timeout) {
+        if (now - it->first_time > m_timeout)
+        {
+            m_stats.frame_timeout++; // 帧级统计: 超时清理
             it = m_streams.erase(it);
-            continue;
         }
-
-        if (now - it->last_time < RETRANSMIT_TIMEOUT_MS) {
+        else
+        {
             ++it;
-            continue;
         }
-
-        if (it->retransmit_count >= MAX_RETRANSMIT_REQUESTS) {
-            int missing_count = it->total_packets - it->chunks.size();
-            if (missing_count > FORCE_DROP_MISSING) {
-                it = m_streams.erase(it);
-                continue;
-            }
-            ++it;
-            continue;
-        }
-
-        if (now - it->retransmit_last_time < RETRANSMIT_TIMEOUT_MS) {
-            ++it;
-            continue;
-        }
-
-        QVector<int> missing;
-        for (int i = 1; i <= it->total_packets; i++) {
-            if (!it->chunks.contains(i))
-                missing.append(i);
-        }
-        if (missing.isEmpty()) { ++it; continue; }
-
-        it->retransmit_count++;
-        it->retransmit_last_time = now;
-
-        result.retransmit_frame = pack_retransmit_request(it.key(), missing);
-        result.frame_id = it.key();
-        result.missing_packets = missing;
-        return result;
     }
 
     return result;
@@ -273,7 +287,7 @@ QVector<int> TransportAssembler::feed_retransmit(const QByteArray& raw) {
 void TransportAssembler::cleanup() {
     double now = steady_now();
     for (auto it = m_streams.begin(); it != m_streams.end(); ) {
-        if (now - it->last_time > m_timeout)
+        if (now - it->first_time > m_timeout)
             it = m_streams.erase(it);
         else
             ++it;

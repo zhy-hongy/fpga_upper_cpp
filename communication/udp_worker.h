@@ -47,6 +47,7 @@ private:
     TransportAssembler m_transport_asm;
     QMutex m_send_mutex;
     QQueue<PendingDatagram> m_send_queue;
+    qint64 m_last_send_err_ms = -2000;  // 发送失败节流上报 (ms 时间戳)
 };
 
 #endif // UDP_WORKER_H

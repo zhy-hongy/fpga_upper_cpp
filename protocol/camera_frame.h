@@ -15,7 +15,9 @@ struct CameraFrame {
     int sensor_id = 0;
 
     void set_image(const cv::Mat& arr) {
-        image = arr.clone();
+        // 浅拷贝：数据由生产者 (解码线程) 分配，且每帧独立 buffer，
+        // refcount 保证释放安全。避免每帧 2.36MB memcpy 拖累 GUI 线程。
+        image = arr;
         has_image = true;
     }
 

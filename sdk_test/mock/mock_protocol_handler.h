@@ -66,10 +66,13 @@ public:
     void set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void read_batch_length(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
+    void get_all_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void reset_buffer(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void start_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
     void stop_capture(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;
+    // 0x0300 请求调试数据（keepalive）：仅记录发送，无 UDP / 无 ACK。
+    void request_camera_data(bool start, int sensor_id = -1) override;
 
     // ── 设备信息读取覆盖（立即返回默认测试数据）──
     void read_camera_version(int sensor_id, std::function<void(const ControlFrame&)> callback = nullptr) override;

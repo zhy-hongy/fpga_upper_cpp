@@ -108,10 +108,11 @@ CMD_NAMES = {
     0x0103: "ENCODER_MODE",
     0x0104: "ENCODER_INTERVAL",
     0x0201: "BATCH_LENGTH",
-    0x0202: "GET_BATCH_DATA",
-    0x0203: "EXTERNAL_TRIGGER",
-    0x0204: "BATCH_CONTROL",
-    0x0205: "RESET_BUFFER",
+    0x0202: "EXTERNAL_TRIGGER_START",
+    0x0203: "BATCH_CONTROL",
+    0x0204: "GET_BATCH_DATA_REALTIME",
+    0x0205: "GET_ALL_BATCH_DATA",
+    0x0206: "RESET_BUFFER",
     0x0501: "NETWORK_CONFIG",
     0x0502: "FPGA_VERSION",
     0x0503: "DEVICE_SERIAL",
@@ -151,7 +152,7 @@ MOCK_STATE = {
 
 def parse_transport_frame(data: bytes) -> dict | None:
     """Parse outer Transport Frame, return inner payload"""
-    if len(data) < 22:
+    if len(data) < 24:
         return None
     if data[0:2] != b'\xAB\xAB':
         return None
@@ -165,15 +166,17 @@ def parse_transport_frame(data: bytes) -> dict | None:
         log(f"  [WARN] Transport CRC mismatch: got 0x{received_crc:04X}, expected 0x{computed_crc:04X}")
         return None
 
-    packet_id     = struct.unpack('>H', data[2:4])[0]
-    total_packets = struct.unpack('>H', data[4:6])[0]
-    current_pkt   = struct.unpack('>H', data[6:8])[0]
-    retransmit    = struct.unpack('>I', data[8:12])[0]
-    data_len      = struct.unpack('>H', data[16:18])[0]
+    device_type   = struct.unpack('>H', data[2:4])[0]
+    packet_id     = struct.unpack('>H', data[4:6])[0]
+    total_packets = struct.unpack('>H', data[6:8])[0]
+    current_pkt   = struct.unpack('>H', data[8:10])[0]
+    retransmit    = struct.unpack('>I', data[10:14])[0]
+    data_len      = struct.unpack('>H', data[18:20])[0]
 
-    payload = data[18:18 + data_len]
+    payload = data[20:20 + data_len]
 
     return {
+        'device_type': device_type,
         'packet_id': packet_id,
         'total_packets': total_packets,
         'current_packet': current_pkt,
@@ -227,10 +230,10 @@ def pack_control_frame(device_type: int, cmd_code: int, msg_id: int,
     return struct.pack('>H', CMD_HEADER) + inner + struct.pack('>H', crc) + struct.pack('>H', CMD_TAIL)
 
 
-def pack_transport_frame(payload: bytes, packet_id: int = 0) -> bytes:
+def pack_transport_frame(payload: bytes, packet_id: int = 0, device_type: int = 0) -> bytes:
     """Build outer Transport Frame"""
-    inner = struct.pack('>HHHIIH',
-                        packet_id, 1, 1,  # packet_id, total=1, current=1
+    inner = struct.pack('>HHHHIIH',
+                        device_type, packet_id, 1, 1,  # device_type, packet_id, total=1, current=1
                         0, 0,             # retransmit=0, reserved=0
                         len(payload))
     inner += payload
@@ -275,7 +278,7 @@ def get_response_data(cmd_code: int, rw: int) -> bytes:
         0x0102: MOCK_STATE["encoder_type"],       # ENCODER_TYPE
         0x0103: MOCK_STATE["encoder_mode"],       # ENCODER_MODE
         0x0201: MOCK_STATE["batch_length"],       # BATCH_LENGTH
-        0x0203: MOCK_STATE["external_trigger"],   # EXTERNAL_TRIGGER
+        0x0202: MOCK_STATE["external_trigger"],   # EXTERNAL_TRIGGER_START
     }
 
     if cmd_code in four_byte_cmds:
@@ -326,7 +329,7 @@ def handle_command(cmd: dict, sender_addr: tuple, sock: socket.socket, control_p
             MOCK_STATE["encoder_interval"] = struct.unpack('>I', payload[:4])[0]
         elif cmd_code == 0x0201 and len(payload) >= 2:  # BATCH_LENGTH
             MOCK_STATE["batch_length"] = struct.unpack('>H', payload[:2])[0]
-        elif cmd_code == 0x0203 and len(payload) >= 2:  # EXTERNAL_TRIGGER
+        elif cmd_code == 0x0202 and len(payload) >= 2:  # EXTERNAL_TRIGGER_START
             MOCK_STATE["external_trigger"] = struct.unpack('>H', payload[:2])[0]
         elif cmd_code == 0x0501 and len(payload) >= 24:  # NETWORK_CONFIG
             MOCK_STATE["net_dev_ip"], MOCK_STATE["net_pc_ip"], \
@@ -341,7 +344,7 @@ def handle_command(cmd: dict, sender_addr: tuple, sock: socket.socket, control_p
         device_type, cmd_code, msg_id,
         MSG_TYPE_RESPONSE, RW_READ, response_data
     )
-    response_tf = pack_transport_frame(response_cf)
+    response_tf = pack_transport_frame(response_cf, device_type=device_type)
 
     if not ACK_ENABLED:
         # 模拟 FPGA 无应答：记录到日志但不发送 ACK（用于超时测试路径）。

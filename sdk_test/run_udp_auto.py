@@ -194,7 +194,7 @@ def main():
 
     try:
         # ── Stage A: normal + async tests ──────────────────────────────────
-        # All capture/batch ops now go through CMD_BATCH_CONTROL (0x0204).
+        # All capture/batch ops now go through CMD_BATCH_CONTROL (0x0203).
         # SENSOR1 定向的 BATCH_CONTROL 共 8 条（最后一条为 async StopCapture）：
         #   StartCapture(1)=1, StopCapture(1)=2,
         #   StartCapture(0 广播→s1)=3, StopCapture(0 广播→s1)=4,

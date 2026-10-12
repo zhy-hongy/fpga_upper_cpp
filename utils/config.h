@@ -9,9 +9,9 @@ struct Config {
     QString target_host = "192.168.10.10";
     int target_port = 60000;
     QString host_ip = "0.0.0.0";
-    int control_port = 5000;
+    int control_port = 60000;
     int data_port = 60000;
-    int recv_buffer_size = 16 * 1024 * 1024;
+    int recv_buffer_size = 128 * 1024 * 1024; // 128MB: 对标 Python DATA_RCVBUF, 吸收高帧率突发
 
     // Camera
     int default_exposure = 10000;

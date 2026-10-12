@@ -28,10 +28,12 @@ static const char* cmd_name(int code) {
         case 0x0103: return "编码器输入模式 (ENCODER_MODE)";
         case 0x0104: return "编码器触发间隔 (ENCODER_INTERVAL)";
         case 0x0201: return "批处理长度 (BATCH_LENGTH)";
-        case 0x0202: return "获取批处理数据 (GET_BATCH_DATA)";
-        case 0x0203: return "外部触发开始 (EXTERNAL_TRIGGER)";
-        case 0x0204: return "启动/停止批处理 (BATCH_CONTROL)";
-        case 0x0205: return "重置缓存数据 (RESET_BUFFER)";
+        case 0x0202: return "外部信号触发开始 (EXTERNAL_TRIGGER_START)";
+        case 0x0203: return "启动/暂停/停止批处理 (BATCH_CONTROL)";
+        case 0x0204: return "实时获取批处理数据 (GET_BATCH_DATA_REALTIME)";
+        case 0x0205: return "获取全部批处理数据 (GET_ALL_BATCH_DATA)";
+        case 0x0206: return "重置缓存数据 (RESET_BUFFER)";
+        case 0x0207: return "设置3D插值配置 (SET_3D_INTERP_CONFIG)";
         case 0x0301: return "获取相机数据 图像 (DATA_IMAGE_2D)";
         case 0x0302: return "获取相机数据 中心线 (DATA_CENTERLINE)";
         case 0x0303: return "获取相机数据 3D点云 (DATA_POINTCLOUD)";
@@ -59,6 +61,17 @@ static const char* rw_name(uint8_t rw) {
     switch (rw) {
         case 0x40: return "写 (WRITE)";
         case 0x80: return "读 (READ)";
+        default: return "未知";
+    }
+}
+
+static const char* device_type_name(int dev) {
+    switch (dev) {
+        case 0x0000: return "FPGA";
+        case 0x0001: return "相机1 (SENSOR1)";
+        case 0x0002: return "相机2 (SENSOR2)";
+        case 0x0003: return "相机3 (SENSOR3)";
+        case 0x0004: return "相机4 (SENSOR4)";
         default: return "未知";
     }
 }
@@ -203,17 +216,21 @@ QString ProtocolAnalyzerDialog::parse_transport_layer(const QByteArray& data) {
         : "  <span style='color:#ff6b6b;'>✗ CRC 校验失败!</span><br>";
 
     // Transport fields
-    uint16_t packet_id = read16(2);
-    uint16_t total_packets = read16(4);
-    uint16_t current_packet = read16(6);
-    uint32_t retransmit = (static_cast<uint8_t>(data[8]) << 24) |
-                          (static_cast<uint8_t>(data[9]) << 16) |
-                          (static_cast<uint8_t>(data[10]) << 8) |
-                          static_cast<uint8_t>(data[11]);
-    uint16_t data_len = read16(16);
-    QByteArray inner_data = data.mid(18, data_len);
+    uint16_t device_type = read16(2);
+    uint16_t packet_id = read16(4);
+    uint16_t total_packets = read16(6);
+    uint16_t current_packet = read16(8);
+    uint32_t retransmit = (static_cast<uint8_t>(data[10]) << 24) |
+                          (static_cast<uint8_t>(data[11]) << 16) |
+                          (static_cast<uint8_t>(data[12]) << 8) |
+                          static_cast<uint8_t>(data[13]);
+    uint16_t data_len = read16(18);
+    QByteArray inner_data = data.mid(20, data_len);
 
     result += "<br><b>── 传输层字段 ──</b><br>";
+    result += QString("<b>设备类型:</b> 0x%1 (%2)<br>")
+        .arg(device_type, 4, 16, QChar('0'))
+        .arg(device_type_name(device_type));
     result += QString("<b>唯一帧ID:</b> 0x%1 (%2)<br>").arg(packet_id, 4, 16, QChar('0')).arg(packet_id);
     result += QString("<b>总包数:</b> %1<br>").arg(total_packets);
     result += QString("<b>当前包数:</b> %1<br>").arg(current_packet);
@@ -223,10 +240,10 @@ QString ProtocolAnalyzerDialog::parse_transport_layer(const QByteArray& data) {
     else
         result += "<b>重传说明:</b> <span style='color:#4ecdc4;'>正常发送 (0)</span><br>";
 
-    uint32_t empty = (static_cast<uint8_t>(data[12]) << 24) |
-                     (static_cast<uint8_t>(data[13]) << 16) |
-                     (static_cast<uint8_t>(data[14]) << 8) |
-                     static_cast<uint8_t>(data[15]);
+    uint32_t empty = (static_cast<uint8_t>(data[14]) << 24) |
+                     (static_cast<uint8_t>(data[15]) << 16) |
+                     (static_cast<uint8_t>(data[16]) << 8) |
+                     static_cast<uint8_t>(data[17]);
     result += QString("<b>保留字段:</b> 0x%1<br>").arg(empty, 8, 16, QChar('0'));
     result += QString("<b>数据长度:</b> %1 字节 (0x%2)<br>").arg(data_len).arg(data_len, 4, 16, QChar('0'));
     result += QString("<b>Data (Hex):</b> <span style='color:#aaa;font-size:10px;'>%1</span><br>")

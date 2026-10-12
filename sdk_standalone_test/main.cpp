@@ -22,7 +22,123 @@
 #include <thread>
 #include <vector>
 
+#include <windows.h>
+#include <dbghelp.h>
+#include <psapi.h>
+
 #include "photon_camera.h"
+
+// ── 临时崩溃诊断：捕获未处理异常并打印调用栈（仅调试用）──
+#pragma comment(lib, "dbghelp.lib")
+#pragma comment(lib, "psapi.lib")
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep);
+static LONG CALLBACK vec_filter(PEXCEPTION_POINTERS ep) {
+    if (ep->ExceptionRecord->ExceptionCode == 0xC0000005) {
+        LONG rc = crash_filter(ep);
+        if (rc == EXCEPTION_CONTINUE_SEARCH) return EXCEPTION_CONTINUE_EXECUTION; /* dead */
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep) {
+    FILE* f = fopen("sdk_standalone_test_crash.txt", "w");
+    if (f != nullptr) {
+        fprintf(f, "EXCEPTION code=0x%08lX addr=%p thread=%lu\n",
+                ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress,
+                GetCurrentThreadId());
+
+        // 列出已加载模块及其基址，便于手工映射崩溃地址
+        fprintf(f, "Modules:\n");
+        {
+            HMODULE mods[256];
+            DWORD need = 0;
+            if (EnumProcessModulesEx(GetCurrentProcess(), mods, sizeof(mods), &need,
+                                     LIST_MODULES_ALL)) {
+                DWORD n = need / sizeof(HMODULE);
+                if (n > 256) n = 256;
+                for (DWORD i = 0; i < n; ++i) {
+                    char name[MAX_PATH];
+                    if (GetModuleFileNameExA(GetCurrentProcess(), mods[i], name, MAX_PATH)) {
+                        MEMORY_BASIC_INFORMATION mbi = {};
+                        if (VirtualQuery(mods[i], &mbi, sizeof(mbi))) {
+                            fprintf(f, "  base=%p size=0x%zx  %s\n", mods[i],
+                                    (size_t)mbi.RegionSize, name);
+                        }
+                    }
+                }
+            }
+        }
+
+        fprintf(f, "Trace:\n");
+        HANDLE proc = GetCurrentProcess();
+        char search[4096];
+        GetCurrentDirectoryA(sizeof(search), search);
+        std::snprintf(search + std::strlen(search), sizeof(search) - std::strlen(search),
+                      ";%s\\sdk", search);
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        SymSetSearchPath(proc, search);
+        SymInitialize(proc, nullptr, FALSE);
+        // 显式加载 CameraSDK 符号（其 PDB 在 build\\sdk 子目录，SymInitialize 默认不加载）
+        {
+            HMODULE mods[256];
+            DWORD need = 0;
+            if (EnumProcessModulesEx(GetCurrentProcess(), mods, sizeof(mods), &need,
+                                     LIST_MODULES_ALL)) {
+                DWORD n = need / sizeof(HMODULE);
+                if (n > 256) n = 256;
+                for (DWORD i = 0; i < n; ++i) {
+                    char name[MAX_PATH];
+                    if (GetModuleFileNameExA(GetCurrentProcess(), mods[i], name, MAX_PATH) &&
+                        std::strstr(name, "CameraSDK.dll")) {
+                        MODULEINFO mi = {};
+                        GetModuleInformation(GetCurrentProcess(), mods[i], &mi, sizeof(mi));
+                        SymLoadModuleEx(proc, nullptr, name, nullptr,
+                                        reinterpret_cast<DWORD64>(mods[i]),
+                                        mi.SizeOfImage, nullptr, 0);
+                        break;
+                    }
+                }
+            }
+        }
+        DWORD64 disp = 0;
+        STACKFRAME64 sf = {};
+        sf.AddrPC.Offset = ep->ContextRecord->Rip;
+        sf.AddrPC.Mode = AddrModeFlat;
+        sf.AddrFrame.Offset = ep->ContextRecord->Rbp;
+        sf.AddrFrame.Mode = AddrModeFlat;
+        sf.AddrStack.Offset = ep->ContextRecord->Rsp;
+        sf.AddrStack.Mode = AddrModeFlat;
+        char buf[1024];
+        for (int i = 0; i < 40; ++i) {
+            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, GetCurrentThread(), &sf,
+                             ep->ContextRecord, nullptr, SymFunctionTableAccess64,
+                             SymGetModuleBase64, nullptr))
+                break;
+            char name[256] = "?";
+            DWORD64 base = SymGetModuleBase64(proc, sf.AddrPC.Offset);
+            if (base && SymFromAddr(proc, sf.AddrPC.Offset, &disp, (PSYMBOL_INFO)buf)) {
+                PSYMBOL_INFO si = (PSYMBOL_INFO)buf;
+                memcpy(name, si->Name, si->NameLen);
+                name[si->NameLen] = 0;
+            }
+            IMAGEHLP_LINE64 ln = {};
+            DWORD ldisp = 0;
+            if (base && SymGetLineFromAddr64(proc, sf.AddrPC.Offset, &ldisp, &ln)) {
+                std::snprintf(buf, sizeof(buf), "  %p  %s+0x%llx  [%s:%lu]\n",
+                              (void*)sf.AddrPC.Offset, name, disp,
+                              ln.FileName ? ln.FileName : "?", ln.LineNumber);
+            } else {
+                std::snprintf(buf, sizeof(buf), "  %p  %s+0x%llx\n",
+                              (void*)sf.AddrPC.Offset, name, disp);
+            }
+            fputs(buf, f);
+        }
+        fflush(f);
+        fclose(f);
+    }
+    TerminateProcess(GetCurrentProcess(), 0xC0000005);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 // ── 数据回调上下文 ──
 static std::atomic<int> g_frameCount{0};
@@ -64,6 +180,11 @@ static void check(const char* name, bool ok, const std::string& detail = "") {
     std::printf("[%s] %s%s%s\n", ok ? "PASS" : "FAIL", name,
                 detail.empty() ? "" : " - ", detail.c_str());
     if (!ok) g_failCount++;
+}
+
+static void diag(const char* msg) {
+    std::fprintf(stderr, "[diag] %s\n", msg);
+    std::fflush(stderr);
 }
 
 // ── UDP 模式：测试所有 SDK API ──────────────────────────────────────────
@@ -692,6 +813,10 @@ static void run_mock_tests(CameraHandle h) {
 // ── main ─────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    SetUnhandledExceptionFilter(crash_filter);
+    AddVectoredExceptionHandler(1, vec_filter);
+    fprintf(stderr, "[diag] main entered\n"); fflush(stderr);
     bool mock = false;
     bool udp  = true;
     std::string ip = "127.0.0.1";
@@ -724,26 +849,34 @@ int main(int argc, char** argv) {
                 mode, ip.c_str(), controlPort, dataPort);
 
     // ── 初始化 ──
+    diag("before Cam_Initialize");
     check("Initialize", Cam_Initialize() == CAM_OK);
+    diag("after Cam_Initialize");
     std::printf("SDK version: %s\n", Cam_GetSdkVersion());
+    diag("after GetSdkVersion");
 
     // ── 打开设备 ──
     CameraHandle h = nullptr;
     CamError e;
     if (mock) {
+        diag("before OpenNetworkDeviceMock");
         e = Cam_OpenNetworkDeviceMock(ip.c_str(), static_cast<uint16_t>(controlPort),
                                       static_cast<uint16_t>(dataPort), &h);
+        diag("after OpenNetworkDeviceMock");
     } else {
         e = Cam_OpenNetworkDevice(ip.c_str(), static_cast<uint16_t>(controlPort),
                                   static_cast<uint16_t>(dataPort), &h);
     }
     check("OpenNetworkDevice", e == CAM_OK && h != nullptr,
           "-> err=" + std::to_string(e));
+    diag("after Open check");
 
     // ── 注册数据回调 ──
     check("RegisterDataHandler", Cam_RegisterDataHandler(h, on_data, nullptr) == CAM_OK);
+    diag("after RegisterDataHandler");
 
     // ── 按模式运行测试 ──
+    diag("before run tests");
     if (mock) {
         run_mock_tests(h);
     } else if (udp) {

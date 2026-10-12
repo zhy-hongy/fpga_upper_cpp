@@ -67,6 +67,9 @@ private slots:
     void on_net_connect();
     void on_net_disconnect();
 
+    // 0x0300 请求调试数据 keepalive (50ms)：FPGA 仅在收到持续 keepalive 时上传图像/轮廓/3D
+    void on_upload_keepalive();
+
     // Camera control
     void on_exp_changed();
     void on_gain_changed();
@@ -107,6 +110,7 @@ private slots:
     // Protocol signals
     void on_connected();
     void on_disconnected();
+    void on_connect_failed(const QString& reason);
     void on_control_response(const ControlFrame& frame);
     void on_frame_info(int fps, int total, int dropped);
     void on_resolution_changed(int sensor_id, int w, int h);
@@ -126,6 +130,7 @@ private:
     void init_ui();
     void connect_signals();
     void apply_display_mode();
+    void update_upload_timer();   // 按"已连接 + (图像|轮廓) 模式"启停 0x0300 keepalive
     void set_layout(int count);
     void set_batch_locked(bool locked);
     void set_upgrade_ui_enabled(bool enabled);
@@ -179,6 +184,10 @@ private:
     int m_total_frames = 0;
     int m_dropped_packets = 0;
     bool m_image_logged = false;
+    bool m_connected = false;     // UDP 连接就绪（on_connected 置 true，断开/失败置 false）
+    // 每传感器最近一次已渲染帧序号 (0 = 未收到)。poll_frame 据此跳过重复帧，
+    // 避免 100Hz 轮询对 25Hz 新帧重复做 2.36MB QPixmap 转换导致 GUI 卡死。
+    uint64_t m_last_rendered_seq[5] = {0, 0, 0, 0, 0};
 
     // Firmware upgrade state
     QString m_firmware_path;
@@ -280,6 +289,7 @@ private:
 
     // ── Timer ──
     QTimer* m_display_timer = nullptr;
+    QTimer* m_upload_timer = nullptr;   // 0x0300 keepalive (50ms)
 
     // ── SDK 功能测试 ──
     SDKTest* m_sdk_test = nullptr;

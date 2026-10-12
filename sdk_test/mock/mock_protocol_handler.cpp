@@ -20,7 +20,8 @@ QByteArray MockProtocolHandler::emit_command(int cmd_code, int rw,
     int msg_id = 0;
     const QByteArray ctrl = build_command_frame(cmd_code, rw, data, sensor_id, &msg_id);
     const int device_type = (sensor_id >= 0) ? sensor_id : DEV_SENSOR1;
-    const QVector<QByteArray> tfs = split_into_transport_frames(ctrl);
+    const QVector<QByteArray> tfs = split_into_transport_frames(
+        ctrl, MAX_TRANSPORT_DATA, -1, RETRANSMIT_NORMAL, device_type);
 
     QByteArray first;
     for (const QByteArray& tf : tfs) {
@@ -110,11 +111,11 @@ void MockProtocolHandler::read_encoder_interval(int sensor_id, std::function<voi
 void MockProtocolHandler::set_external_trigger(bool enabled, int sensor_id, std::function<void(const ControlFrame&)> callback) {
     QByteArray payload(2, '\0');
     if (enabled) payload[1] = 0x01;
-    emit_command(CMD_EXTERNAL_TRIGGER, RW_WRITE, payload, sensor_id);
+    emit_command(CMD_EXTERNAL_TRIGGER_START, RW_WRITE, payload, sensor_id);
     reply(std::move(callback));
 }
 void MockProtocolHandler::read_external_trigger(int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    emit_command(CMD_EXTERNAL_TRIGGER, RW_READ, QByteArray(2, '\0'), sensor_id);
+    emit_command(CMD_EXTERNAL_TRIGGER_START, RW_READ, QByteArray(2, '\0'), sensor_id);
     reply(std::move(callback), be16(static_cast<uint16_t>(default_external_trigger())));
 }
 void MockProtocolHandler::set_batch_length(int count, int sensor_id, std::function<void(const ControlFrame&)> callback) {
@@ -127,7 +128,7 @@ void MockProtocolHandler::read_batch_length(int sensor_id, std::function<void(co
     reply(std::move(callback), be16(static_cast<uint16_t>(m_batch_length)));
 }
 void MockProtocolHandler::get_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    emit_command(CMD_GET_BATCH_DATA, RW_READ, QByteArray(2, '\0'), sensor_id);
+    emit_command(CMD_GET_BATCH_DATA_REALTIME, RW_READ, QByteArray(2, '\0'), sensor_id);
 
     // 生成 m_batch_length 帧模拟点云数据（CMD_DATA_POINTCLOUD），
     // 在 ACK 之前同步 emit，确保 Cam_ReceiveBatchData 能收到数据帧。
@@ -153,8 +154,12 @@ void MockProtocolHandler::get_batch_data(int sensor_id, std::function<void(const
 
     reply(std::move(callback), QByteArray(128, '\0'));  // 128 字节零填充默认批处理响应
 }
+void MockProtocolHandler::get_all_batch_data(int sensor_id, std::function<void(const ControlFrame&)> callback) {
+    emit_command(CMD_GET_ALL_BATCH_DATA, RW_READ, QByteArray(2, '\0'), sensor_id);
+    reply(std::move(callback), QByteArray(128, '\0'));  // 128 字节零填充默认批处理响应
+}
 void MockProtocolHandler::set_batch_control(bool start, int sensor_id, std::function<void(const ControlFrame&)> callback) {
-    // 0x0204 写数据 4B：高 2B 开关(0x0001 启动 / 0x0000 停止)，低 2B 批次序号(置 0)
+    // 0x0203 写数据 4B：高 2B 开关(0x0001 启动 / 0x0000 停止)，低 2B 批次序号(置 0)
     QByteArray payload(4, '\0');
     if (start) payload[1] = 0x01;
     emit_command(CMD_BATCH_CONTROL, RW_WRITE, payload, sensor_id);
@@ -173,6 +178,13 @@ void MockProtocolHandler::stop_capture(int sensor_id, std::function<void(const C
     emit_command(CMD_BATCH_CONTROL, RW_WRITE, QByteArray(4, '\0'), sensor_id);
     reply(std::move(callback));
     stop_mock_frames();
+}
+
+void MockProtocolHandler::request_camera_data(bool start, int sensor_id) {
+    QByteArray payload(2, '\0');
+    if (start) payload[1] = 0x01;
+    const int dev = (sensor_id >= 0) ? sensor_id : DEV_SENSOR1;
+    emit_command(CMD_GET_CAMERA_DATA, RW_WRITE, payload, dev);
 }
 
 // ── 设备信息读取覆盖：记录命令 + 返回默认测试数据 ──

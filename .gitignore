@@ -4,3 +4,15 @@ build
 *.log
 .trae/
 build_new/
+
+# New SDK's generated output (source and tests remain reviewable).
+/out/sdk-v2-*/
+/out/*_v2_check.o
+/out/sdk-v2-build.log
+/sdk_v2/build-wire/
+/sdk_v2/*.exe
+/sdk_v2/*.o
+/sdk_v2/*.obj
+/sdk_v2/*.dll
+/sdk_v2/*.lib
+/sdk_v2/*.pdb
