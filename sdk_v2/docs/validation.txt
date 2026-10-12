@@ -1,0 +1,50 @@
+FPGA C++ SDK 2.0 validation — 2026-10-12 (Asia/Shanghai)
+
+Build: Visual Studio 2026, MSVC 19.51, x64 Release, C++17.
+Qt demo: Qt6 Widgets. Optional vision: vcpkg OpenCV 4.12.
+Final CTest: 13 / 13 passed.
+
+Passing targets:
+  sdk_vision                 — 28 vision checks
+  sdk_python_wire_diff       — 351 byte-for-byte vectors against original Python
+  sdk_python_capture_diff    — 8 actual 2026-10-10 camera captures
+  sdk_python_analysis_diff   — 8 captures; native DLL, focus, SF numeric statistics
+  sdk_python_vision_diff     — 8 synthetic images against original Python detectors
+  sdk_wire                   — 1655 protocol/parameter checks
+  sdk_data                   — image/layout/numeric/batch/firmware codecs
+  sdk_device                 — 80 UDP/lifecycle/identity/budget/stop checks
+  sdk_upgrade                — independent UDP upgrade handshake, data, CRC, cancellation
+  sdk_analysis               — focus and SF error masks/grids/lag
+  sdk_tools                  — discovery, stress, fixed readback, cancellation, exports
+  sdk_stream                 — 16 exact 2048x1152 Gray8 frames, 26080 real UDP packets
+  sdk_qt_demo_smoke           — UI parameter write/readback, 4 sensors, HDR, focus,
+                               trigger/batch, interpolation, raw registers, reset
+
+Full-resolution stream: all 16 images equal their source pixels; zero malformed,
+incomplete, or retained in-flight frames. Serial request/response loopback smoke
+measured approximately 25 FPS before reducing per-packet allocation/select calls.
+This is a local smoke workload, not a hardware link-rate or multi-hour soak claim.
+
+External consumer validation:
+  Configured out/sdk-v2-package/examples with find_package(FPGASDK).
+  Linked only FPGA::SDK, without Qt/OpenCV/event loop.
+  --simulate returned heartbeat 0x0155, exposure 10000 us, image 512x256,
+  centerline 512 points and cloud 128 points; exit 0.
+
+Hardware reachability attempt:
+  Local 192.168.10.100:60000 -> FPGA 192.168.10.10:60000.
+  Read-only 0x0401 heartbeat timed out.
+  Windows neighbor state for 192.168.10.10: Unreachable.
+  No register writes, firmware upgrade or device reconfiguration performed.
+  No online image capture or hardware soak could be verified in this session.
+  Detailed file: out/sdk-v2-hardware-20261012/hardware_probe.tsv.
+
+GUI preview: out/sdk-v2-release/sdk_v2/demo_smoke.png and corresponding .log.
+Build/test log: out/sdk-v2-build.log.
+
+Boundaries:
+  Protocol/source baseline is the locally downloaded 2026-10-10 Feishu document
+  and the supplied Python tree. Direct access to the Feishu wiki was unavailable.
+  Native SF processing explicitly loads the existing supplied algorithm DLL/XML.
+  Vivado/JTAG, TShark/Npcap and the offline RTL reference simulator are external
+  diagnostics; they were not rebuilt into this SDK.

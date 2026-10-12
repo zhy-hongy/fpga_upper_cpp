@@ -1,0 +1,7 @@
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+include("${CMAKE_CURRENT_LIST_DIR}/FPGASDKTargets.cmake")
+if("Vision" IN_LIST FPGASDK_FIND_COMPONENTS)
+    find_dependency(OpenCV COMPONENTS core imgproc calib3d)
+    include("${CMAKE_CURRENT_LIST_DIR}/FPGAVisionTargets.cmake")
+endif()
